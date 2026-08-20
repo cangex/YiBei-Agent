@@ -1,0 +1,52 @@
+import assert from "node:assert/strict";
+import { stat } from "node:fs/promises";
+import test from "node:test";
+
+async function render(pathname = "/") {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${pathname}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  return worker.fetch(
+    new Request(`http://localhost${pathname}`, { headers: { accept: "text/html" } }),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+}
+
+test("server-renders the finished Yibei brand homepage", async () => {
+  const response = await render();
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+
+  const html = await response.text();
+  assert.match(html, /<html lang="zh-CN">/);
+  assert.match(html, /<title>益贝医疗智能体｜智能义齿设计与数字孪生验证<\/title>/);
+  assert.match(html, /让义齿，从几何重建/);
+  assert.match(html, /href="\/reconstruction"/);
+  assert.match(html, /href="\/twin-ai"/);
+  assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);
+});
+
+test("server-renders both product routes with independent metadata", async () => {
+  const [reconstructionResponse, twinResponse] = await Promise.all([
+    render("/reconstruction"),
+    render("/twin-ai"),
+  ]);
+  assert.equal(reconstructionResponse.status, 200);
+  assert.equal(twinResponse.status, 200);
+
+  const reconstruction = await reconstructionResponse.text();
+  const twin = await twinResponse.text();
+  assert.match(reconstruction, /<title>义齿三维轮廓超精准重建智能体｜益贝医疗智能体<\/title>/);
+  assert.match(reconstruction, /启动超精准重建/);
+  assert.match(reconstruction, /读取三角网格与空间边界/);
+  assert.match(twin, /<title>双微AI设计智能体及验证平台｜益贝医疗智能体<\/title>/);
+  assert.match(twin, /启动双微AI设计/);
+  assert.match(twin, /六边贯通型/);
+});
+
+test("ships the real STL demonstration model", async () => {
+  const model = await stat(new URL("../public/models/demo.stl", import.meta.url));
+  assert.ok(model.size > 2_000_000);
+});
