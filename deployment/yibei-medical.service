@@ -1,0 +1,26 @@
+[Unit]
+Description=Yibei Medical Intelligence website
+After=network.target
+
+[Service]
+Type=simple
+User=yibei
+Group=yibei
+WorkingDirectory=/opt/yibei-medical-site/current
+Environment=NODE_ENV=production
+Environment=PORT=3100
+Environment=HOST=127.0.0.1
+Environment=HOME=/opt/yibei-medical-site/shared
+Environment=PATH=/opt/yibei-medical-site/shared/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment=LD_LIBRARY_PATH=/opt/yibei-medical-site/shared/lib
+Environment=OPENSSL_CONF=/opt/yibei-medical-site/shared/ssl/openssl.cnf
+Environment=OPENSSL_MODULES=/opt/yibei-medical-site/shared/lib/ossl-modules
+ExecStart=/opt/yibei-medical-site/shared/bin/node /opt/yibei-medical-site/shared/bin/vinext-cli.js start
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGINT
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
