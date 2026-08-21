@@ -1,5 +1,18 @@
 # 服务器维护
 
+## 本机 macOS
+
+本机入口为 `http://localhost:3000/`，使用用户级 `launchd` 服务 `com.yibei.medical`，仅监听 `127.0.0.1`。
+
+```bash
+launchctl print gui/$(id -u)/com.yibei.medical
+launchctl kickstart -k gui/$(id -u)/com.yibei.medical
+```
+
+本机服务日志位于 `~/Library/Logs/YibeMedical.out.log` 和 `~/Library/Logs/YibeMedical.err.log`。
+
+## 公网服务器
+
 生产目录为 `/opt/yibei-medical-site`，当前版本通过 `current` 软链接切换。
 公网入口为 `http://36.212.4.103:3000/`；Nginx 同时监听 80 与 3000，应用进程监听 3100。云侧当前只放通了 3000。
 

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { DentalScene, DentalSceneMode } from "./DentalScene";
 import { ProductNav } from "./ProductNav";
@@ -143,9 +142,9 @@ export function ReconstructionExperience() {
               <span>{running ? "智能体运行中" : "启动超精准重建"}</span><i aria-hidden="true">→</i>
             </button>
           ) : (
-            <Link className="primary-orbit-button is-ready" href="/twin-ai?source=processed">
+            <a className="primary-orbit-button is-ready" href="/twin-ai?source=processed">
               <span>进入双微AI设计</span><i aria-hidden="true">→</i>
-            </Link>
+            </a>
           )}
         </aside>
       </section>

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yibei.medical</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/yezhucan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node</string>
+    <string>/Users/yezhucan/Desktop/益贝AI/yibei-medical-site/node_modules/vinext/dist/cli.js</string>
+    <string>start</string>
+    <string>--hostname</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>3000</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/yezhucan/Desktop/益贝AI/yibei-medical-site</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PATH</key>
+    <string>/Users/yezhucan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>WRANGLER_LOG_PATH</key>
+    <string>/Users/yezhucan/Desktop/益贝AI/yibei-medical-site/.wrangler/wrangler.log</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/yezhucan/Library/Logs/YibeMedical.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/yezhucan/Library/Logs/YibeMedical.err.log</string>
+</dict>
+</plist>

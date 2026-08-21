@@ -1,14 +1,14 @@
-import Link from "next/link";
+/* eslint-disable @next/next/no-html-link-for-pages */
 import { DentalScene } from "./components/DentalScene";
 
 export default function Home() {
   return (
     <main className="site-shell home-shell">
       <header className="topbar">
-        <Link className="brand-lockup" href="/" aria-label="益贝医疗智能体首页">
+        <a className="brand-lockup" href="/" aria-label="益贝医疗智能体首页">
           <span className="brand-mark" aria-hidden="true"><i /><i /></span>
           <span>益贝医疗智能体</span>
-        </Link>
+        </a>
         <span className="topbar-note">DENTAL INTELLIGENCE · 2026</span>
       </header>
 
@@ -30,17 +30,17 @@ export default function Home() {
             <span className="model-index">YB / LIVE GEOMETRY</span>
           </div>
 
-          <Link className="product-entry product-entry-left" href="/reconstruction">
+          <a className="product-entry product-entry-left" href="/reconstruction">
             <span className="entry-no">01</span>
             <span className="entry-title">义齿三维轮廓<br />超精准重建智能体</span>
             <span className="entry-action" aria-hidden="true">↗</span>
-          </Link>
+          </a>
 
-          <Link className="product-entry product-entry-right" href="/twin-ai">
+          <a className="product-entry product-entry-right" href="/twin-ai">
             <span className="entry-no">02</span>
             <span className="entry-title">双微AI设计智能体<br />及验证平台</span>
             <span className="entry-action" aria-hidden="true">↗</span>
-          </Link>
+          </a>
         </div>
 
         <div className="hero-footer reveal-3">
