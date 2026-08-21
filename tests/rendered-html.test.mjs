@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
 async function render(pathname = "/") {
@@ -26,6 +26,17 @@ test("server-renders the finished Yibei brand homepage", async () => {
   assert.match(html, /href="\/reconstruction"/);
   assert.match(html, /href="\/twin-ai"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);
+});
+
+test("homepage uses a procedural anatomical tooth instead of the STL demo", async () => {
+  const [homepage, heroScene] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/HeroToothScene.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(homepage, /HeroToothScene/);
+  assert.doesNotMatch(homepage, /DentalScene|demo\.stl/);
+  assert.match(heroScene, /createAnatomicalTooth/);
+  assert.doesNotMatch(heroScene, /STLLoader|demo\.stl|fetch\(/);
 });
 
 test("server-renders both product routes with independent metadata", async () => {

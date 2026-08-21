@@ -1,5 +1,5 @@
 /* eslint-disable @next/next/no-html-link-for-pages */
-import { DentalScene } from "./components/DentalScene";
+import { HeroToothScene } from "./components/HeroToothScene";
 
 export default function Home() {
   return (
@@ -26,8 +26,17 @@ export default function Home() {
           <div className="orbit orbit-a" aria-hidden="true" />
           <div className="orbit orbit-b" aria-hidden="true" />
           <div className="home-model" aria-hidden="true">
-            <DentalScene mode="scan" interactive={false} className="dental-scene home-dental-scene" />
-            <span className="model-index">YB / LIVE GEOMETRY</span>
+            <HeroToothScene className="dental-scene home-dental-scene" />
+            <span className="scan-frame-corner corner-a" />
+            <span className="scan-frame-corner corner-b" />
+            <span className="scan-frame-corner corner-c" />
+            <span className="scan-frame-corner corner-d" />
+            <span className="scan-readout">
+              <b>STRUCTURED SURFACE CAPTURE</b>
+              <small>NORMAL · CURVATURE · DEPTH</small>
+            </span>
+            <span className="scan-depth-rail"><i /><i /><i /><i /><i /><i /><i /></span>
+            <span className="model-index">YB / ANATOMICAL TWIN · M1</span>
           </div>
 
           <a className="product-entry product-entry-left" href="/reconstruction">
