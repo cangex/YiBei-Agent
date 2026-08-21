@@ -74,3 +74,23 @@ test("ships the CC0 compact molar homepage model", async () => {
   assert.match(notices, /CC0 1\.0/);
   assert.match(notices, /c25d75c8c3d03d5323471168d35a0396f7187bab/);
 });
+
+test("product scenes use precision surface scanning and continuous stage transitions", async () => {
+  const [scene, reconstruction, twin, styles] = await Promise.all([
+    readFile(new URL("../app/components/DentalScene.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ReconstructionExperience.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/TwinAIExperience.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(scene, /createSliceProfile/);
+  assert.match(scene, /createPointCloud/);
+  assert.match(scene, /createNormalField/);
+  assert.match(scene, /uScanY/);
+  assert.doesNotMatch(scene, /const scanLine/);
+  assert.match(reconstruction, /stageProgress/);
+  assert.match(reconstruction, /stepDurations/);
+  assert.match(twin, /phaseProgress/);
+  assert.match(twin, /phaseDurations/);
+  assert.match(styles, /stage-transition-veil/);
+  assert.match(styles, /stage-bridge/);
+});

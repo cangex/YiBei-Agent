@@ -1,7 +1,7 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
-import { DentalScene, DentalSceneMode } from "./DentalScene";
+import { CSSProperties, ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { DentalScene, DentalSceneMode, DentalScenePhase } from "./DentalScene";
 import { ProductNav } from "./ProductNav";
 
 const steps = [
@@ -14,6 +14,12 @@ const steps = [
 ];
 
 const modes: DentalSceneMode[] = ["porcelain", "scan", "heatmap", "repaired", "heatmap", "repaired"];
+const visualPhases: DentalScenePhase[] = ["parse", "scan", "defect", "repair", "validate", "ready"];
+const stepDurations = [1800, 3000, 2400, 2700, 2400, 1600];
+
+function ease(value: number) {
+  return value * value * (3 - 2 * value);
+}
 
 export function ReconstructionExperience() {
   const [modelSrc, setModelSrc] = useState("/models/demo.stl");
@@ -21,6 +27,7 @@ export function ReconstructionExperience() {
   const [activeStep, setActiveStep] = useState(0);
   const [running, setRunning] = useState(false);
   const [complete, setComplete] = useState(false);
+  const [stageProgress, setStageProgress] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [message, setMessage] = useState("");
   const [triangles, setTriangles] = useState(41176);
@@ -28,14 +35,27 @@ export function ReconstructionExperience() {
 
   useEffect(() => {
     if (!running) return;
-    if (activeStep >= steps.length - 1) {
-      const timer = window.setTimeout(() => { setRunning(false); setComplete(true); }, 700);
-      return () => window.clearTimeout(timer);
-    }
     const token = runToken.current;
-    const timer = window.setTimeout(() => {
-      if (token === runToken.current) setActiveStep((value) => value + 1);
-    }, activeStep === 0 ? 850 : 1180);
+    const startedAt = performance.now();
+    const duration = stepDurations[activeStep];
+    let timer = 0;
+    const tick = () => {
+      if (token !== runToken.current) return;
+      const fraction = Math.min(1, (performance.now() - startedAt) / duration);
+      setStageProgress(fraction);
+      if (fraction >= 1) {
+        if (activeStep >= steps.length - 1) {
+          setRunning(false);
+          setComplete(true);
+        } else {
+          setStageProgress(0);
+          setActiveStep((value) => value + 1);
+        }
+        return;
+      }
+      timer = window.setTimeout(tick, 42);
+    };
+    tick();
     return () => window.clearTimeout(timer);
   }, [activeStep, running]);
 
@@ -54,6 +74,7 @@ export function ReconstructionExperience() {
     setModelSrc(url);
     setFileName(file.name);
     setActiveStep(0);
+    setStageProgress(0);
     setComplete(false);
     setRunning(false);
     setMessage("");
@@ -69,13 +90,15 @@ export function ReconstructionExperience() {
   const start = () => {
     runToken.current += 1;
     setActiveStep(0);
+    setStageProgress(0);
     setComplete(false);
     setRunning(true);
     setMessage("");
   };
 
-  const progress = running ? Math.round(((activeStep + .35) / steps.length) * 100) : complete ? 100 : 0;
+  const progress = running ? Math.round(((activeStep + ease(stageProgress)) / steps.length) * 100) : complete ? 100 : 0;
   const currentMode = complete ? "repaired" : modes[activeStep];
+  const currentPhase: DentalScenePhase = complete ? "ready" : running ? visualPhases[activeStep] : "idle";
   const defectCount = useMemo(() => Math.max(6, Math.round(triangles / 4100)), [triangles]);
 
   return (
@@ -99,13 +122,21 @@ export function ReconstructionExperience() {
           <DentalScene
             src={modelSrc}
             mode={currentMode}
+            phase={currentPhase}
+            stageProgress={complete ? 1 : stageProgress}
             interactive={!running}
             className="dental-scene reconstruction-scene"
             onLoaded={({ triangles: count }) => setTriangles(Math.round(count))}
           />
+          {running && <div key={`bridge-${activeStep}`} className="stage-transition-veil" aria-hidden="true" />}
           {(running || complete) && <div className={`processing-caption ${complete ? "is-complete" : ""}`}>
-            <span>{complete ? "RECONSTRUCTION COMPLETE" : steps[activeStep].title}</span>
+            <span key={`caption-${activeStep}-${complete}`} className="processing-caption-copy">
+              <i>{complete ? "READY" : steps[activeStep].id}</i>
+              <b>{complete ? "RECONSTRUCTION COMPLETE" : steps[activeStep].title}</b>
+              <small>{complete ? "连续表面已进入可设计状态" : steps[activeStep].note}</small>
+            </span>
             <strong>{String(progress).padStart(2, "0")}%</strong>
+            <em className="processing-progress"><i style={{ width: `${progress}%` }} /></em>
           </div>}
           <div className="scene-axis" aria-hidden="true"><span>X</span><span>Y</span><span>Z</span></div>
           {dragging && <div className="drop-overlay"><strong>释放以载入模型</strong><span>STL · MAX 80 MB</span></div>}
@@ -121,9 +152,10 @@ export function ReconstructionExperience() {
           </div>
           {message && <p className="inline-error" role="alert">{message}</p>}
 
-          <div className="process-rail" aria-label="重建流程">
+          <div className="process-rail" aria-label="重建流程" style={{ "--rail-progress": `${complete ? 100 : (activeStep + stageProgress) / steps.length * 100}%` } as CSSProperties}>
+            <span className="process-rail-fill" aria-hidden="true" />
             {steps.map((step, index) => (
-              <div key={step.id} className={`process-step ${index === activeStep ? "is-active" : ""} ${index < activeStep || complete ? "is-done" : ""}`}>
+              <div key={step.id} style={index === activeStep ? { "--step-progress": stageProgress } as CSSProperties : undefined} className={`process-step ${index === activeStep ? "is-active" : ""} ${index < activeStep || complete ? "is-done" : ""}`}>
                 <span className="step-index">{step.id}</span>
                 <span className="step-marker"><i /></span>
                 <span className="step-copy"><strong>{step.title}</strong><small>{step.note}</small></span>

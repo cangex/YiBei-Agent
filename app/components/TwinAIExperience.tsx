@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { DentalScene, DentalSceneMode } from "./DentalScene";
+import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { DentalScene, DentalSceneMode, DentalScenePhase } from "./DentalScene";
 import { MicroTextureLens } from "./MicroTextureLens";
 import { ProductNav } from "./ProductNav";
 
@@ -53,6 +53,12 @@ const schemes = [
 ];
 
 const metricNames = ["结构稳定", "流体交换", "抗沉积", "抗菌定植", "疲劳耐受"];
+const visualPhases: DentalScenePhase[] = ["ingress", "segment", "generate", "simulate", "converge"];
+const phaseDurations = [1800, 3000, 3100, 3800, 2300];
+
+function ease(value: number) {
+  return value * value * (3 - 2 * value);
+}
 
 export function TwinAIExperience() {
   const [modelSrc] = useState(() => {
@@ -63,19 +69,39 @@ export function TwinAIExperience() {
   const [running, setRunning] = useState(false);
   const [complete, setComplete] = useState(false);
   const [schemeIndex, setSchemeIndex] = useState(0);
+  const [phaseProgress, setPhaseProgress] = useState(0);
+  const runToken = useRef(0);
 
   useEffect(() => {
     if (!running) return;
-    if (phase >= phases.length - 1) {
-      const timer = window.setTimeout(() => { setRunning(false); setComplete(true); }, 900);
-      return () => window.clearTimeout(timer);
-    }
-    const timer = window.setTimeout(() => setPhase((value) => value + 1), phase === 0 ? 950 : 1450);
+    const token = runToken.current;
+    const startedAt = performance.now();
+    const duration = phaseDurations[phase];
+    let timer = 0;
+    const tick = () => {
+      if (token !== runToken.current) return;
+      const fraction = Math.min(1, (performance.now() - startedAt) / duration);
+      setPhaseProgress(fraction);
+      if (fraction >= 1) {
+        if (phase >= phases.length - 1) {
+          setRunning(false);
+          setComplete(true);
+        } else {
+          setPhaseProgress(0);
+          setPhase((value) => value + 1);
+        }
+        return;
+      }
+      timer = window.setTimeout(tick, 42);
+    };
+    tick();
     return () => window.clearTimeout(timer);
   }, [phase, running]);
 
   const begin = () => {
+    runToken.current += 1;
     setPhase(0);
+    setPhaseProgress(0);
     setSchemeIndex(0);
     setComplete(false);
     setRunning(true);
@@ -90,6 +116,8 @@ export function TwinAIExperience() {
     return "texture";
   }, [phase]);
   const visibleScheme = phase >= 2 || complete;
+  const scenePhase: DentalScenePhase = complete ? "converge" : running ? visualPhases[phase] : "idle";
+  const overallProgress = complete ? 100 : running ? (phase + ease(phaseProgress)) / phases.length * 100 : 0;
   return (
     <main className="product-page twin-page">
       <ProductNav section="双微AI设计智能体及验证平台" />
@@ -107,19 +135,22 @@ export function TwinAIExperience() {
 
       <section className="twin-workspace">
         <div className="twin-scene-wrap">
-          <DentalScene src={modelSrc} mode={sceneMode} textureSides={scheme.sides} wave={scheme.wave} interactive={!running} className="dental-scene twin-scene" />
-          <div className="zone-callout zone-one"><i />高适配区 <b>92%</b></div>
-          <div className="zone-callout zone-two"><i />流体交换区 <b>87%</b></div>
+          <DentalScene src={modelSrc} mode={sceneMode} phase={scenePhase} stageProgress={complete ? 1 : phaseProgress} textureSides={scheme.sides} wave={scheme.wave} interactive={!running} className="dental-scene twin-scene" />
+          {running && <div key={`twin-bridge-${phase}`} className="stage-transition-veil twin-transition-veil" aria-hidden="true" />}
+          <div className={`zone-callout zone-one ${phase >= 1 || complete ? "is-visible" : ""}`}><i />高适配区 <b>92%</b></div>
+          <div className={`zone-callout zone-two ${phase >= 1 || complete ? "is-visible" : ""}`}><i />流体交换区 <b>87%</b></div>
           <div className="twin-scene-label"><span>活体数字镜像</span><strong>DT-2408 / YB</strong></div>
-          {(phase === 1 || running) && <div className="radial-scan" aria-hidden="true" />}
-          {phase === 3 && <div className="flow-legend"><i /><span>仿真流体轨迹</span></div>}
+          {(running || complete) && <div key={`phase-readout-${phase}-${complete}`} className="twin-phase-readout"><i>0{phase + 1}</i><strong>{complete ? "AI RECOMMENDATION READY" : phases[phase].title}</strong><span>{Math.round(overallProgress).toString().padStart(2, "0")}%</span></div>}
+          <div className={`flow-legend ${phase === 3 ? "is-visible" : ""}`}><i /><span>仿真流体轨迹</span></div>
         </div>
 
         <aside className="twin-intelligence">
           <div className="ai-state">
             <span>双微AI · 当前状态</span>
-            <strong>{complete ? "方案已收敛" : running ? phases[phase].title : "等待启动"}</strong>
-            <small>{complete ? "推荐方案已通过五维联合评估" : running ? phases[phase].short : "启动后将完成区域识别、生成与仿真"}</small>
+            <div key={`ai-copy-${phase}-${complete}`} className="ai-state-swap">
+              <strong>{complete ? "方案已收敛" : running ? phases[phase].title : "等待启动"}</strong>
+              <small>{complete ? "推荐方案已通过五维联合评估" : running ? phases[phase].short : "启动后将完成区域识别、生成与仿真"}</small>
+            </div>
           </div>
 
           <div className={`texture-lens ${visibleScheme ? "is-visible" : ""}`}>
@@ -138,9 +169,9 @@ export function TwinAIExperience() {
           </button>
         </aside>
 
-        <div className="phase-track" aria-label="双微AI流程">
+        <div className="phase-track" aria-label="双微AI流程" style={{ "--phase-progress": `${overallProgress}%` } as CSSProperties}>
           {phases.map((item, index) => (
-            <button type="button" key={item.title} disabled={!complete} onClick={() => complete && setPhase(index)} className={`${index === phase ? "is-active" : ""} ${index < phase || complete ? "is-done" : ""}`}>
+            <button type="button" key={item.title} disabled={!complete} onClick={() => { if (complete) { setPhase(index); setPhaseProgress(1); } }} className={`${index === phase ? "is-active" : ""} ${index < phase || complete ? "is-done" : ""}`}>
               <i /><span>0{index + 1}</span><strong>{item.title}</strong>
             </button>
           ))}
