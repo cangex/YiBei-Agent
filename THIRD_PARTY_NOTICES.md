@@ -1,12 +1,12 @@
 # Third-party model notices
 
-## FDI 11 anatomical tooth
+## Standard molar
 
-- File in this project: `public/models/anatomical-tooth-11.stl`
-- Original file: `11.stl`
-- Source: Marcel Reymus, *DentalEmergencyModel*, Zenodo, 2026
-- DOI: https://doi.org/10.5281/zenodo.20303324
-- Source statement: the record permits the files to be used, modified, and distributed for any purpose, including 3D printing and DLP applications.
-- MD5: `32f8fb84fd0ceaf46b5024a4e0a77a2d`
+- File in this project: `public/models/standard-molar.stl`
+- Original file: `Zahn 20230620 001.stl`
+- Source: PantheraLeo1359531, Wikimedia Commons, 2023
+- Source page: https://commons.wikimedia.org/wiki/File:Zahn_20230620_001.stl
+- License: Creative Commons CC0 1.0 Universal Public Domain Dedication
+- SHA-1: `c25d75c8c3d03d5323471168d35a0396f7187bab`
 
-The mesh is displayed as a general anatomical and design visualization. It is not patient data and is not presented as a clinical diagnostic model.
+The mesh is used as a general, non-patient dental visualization. It is not presented as a clinical diagnostic model.

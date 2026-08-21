@@ -25,7 +25,7 @@ type ScanRig = {
 const AQUA = new THREE.Color(0x73cdbd);
 const AQUA_PALE = new THREE.Color(0xd9fff5);
 const SIGNAL = new THREE.Color(0xff6a43);
-const MODEL_URL = "/models/anatomical-tooth-11.stl";
+const MODEL_URL = "/models/standard-molar.stl";
 
 function smoothstep(min: number, max: number, value: number) {
   const x = THREE.MathUtils.clamp((value - min) / (max - min), 0, 1);
@@ -33,7 +33,7 @@ function smoothstep(min: number, max: number, value: number) {
 }
 
 function prepareToothGeometry(geometry: THREE.BufferGeometry) {
-  // FDI 11 uses Z as its long axis. Reorient and normalize it once so every
+  // The source molar uses Z as its long axis. Reorient and normalize it once so every
   // scanning layer shares the same anatomical coordinate system.
   geometry.rotateX(-Math.PI / 2);
   geometry.computeBoundingBox();
@@ -43,7 +43,7 @@ function prepareToothGeometry(geometry: THREE.BufferGeometry) {
   geometry.computeBoundingBox();
   const size = new THREE.Vector3();
   geometry.boundingBox?.getSize(size);
-  const scale = 3.34 / Math.max(size.y, 0.001);
+  const scale = 3.08 / Math.max(size.y, 0.001);
   geometry.scale(scale, scale, scale);
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
@@ -213,7 +213,7 @@ export function HeroToothScene({ className }: Props) {
       const maxY = bounds.max.y;
       const profile = createSliceProfile(toothGeometry, minY, maxY);
       const toothGroup = new THREE.Group();
-      const baseRotationY = Math.PI / 2 - 0.13;
+      const baseRotationY = 0.62;
       toothGroup.rotation.set(-0.045, baseRotationY, 0.014);
       toothGroup.position.y = 0.04;
       scene.add(toothGroup);
@@ -499,5 +499,5 @@ export function HeroToothScene({ className }: Props) {
     };
   }, []);
 
-  return <div ref={mountRef} className={className} aria-label="标准成人上颌中切牙精密扫描三维模型" />;
+  return <div ref={mountRef} className={className} aria-label="标准成人磨牙精密扫描三维模型" />;
 }

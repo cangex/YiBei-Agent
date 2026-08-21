@@ -28,7 +28,7 @@ test("server-renders the finished Yibei brand homepage", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);
 });
 
-test("homepage uses a dedicated anatomical incisor instead of the product demo STL", async () => {
+test("homepage uses a compact molar instead of the product demo STL", async () => {
   const [homepage, heroScene] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/HeroToothScene.tsx", import.meta.url), "utf8"),
@@ -36,7 +36,7 @@ test("homepage uses a dedicated anatomical incisor instead of the product demo S
   assert.match(homepage, /HeroToothScene/);
   assert.doesNotMatch(homepage, /DentalScene|demo\.stl/);
   assert.match(heroScene, /STLLoader/);
-  assert.match(heroScene, /anatomical-tooth-11\.stl/);
+  assert.match(heroScene, /standard-molar\.stl/);
   assert.doesNotMatch(heroScene, /demo\.stl|createAnatomicalTooth|createCrown|createRoot/);
 });
 
@@ -63,12 +63,12 @@ test("ships the real STL demonstration model", async () => {
   assert.ok(model.size > 2_000_000);
 });
 
-test("ships the licensed FDI 11 anatomical homepage model", async () => {
+test("ships the CC0 compact molar homepage model", async () => {
   const [model, notices] = await Promise.all([
-    stat(new URL("../public/models/anatomical-tooth-11.stl", import.meta.url)),
+    stat(new URL("../public/models/standard-molar.stl", import.meta.url)),
     readFile(new URL("../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8"),
   ]);
-  assert.ok(model.size > 7_000_000);
-  assert.match(notices, /10\.5281\/zenodo\.20303324/);
-  assert.match(notices, /32f8fb84fd0ceaf46b5024a4e0a77a2d/);
+  assert.ok(model.size > 1_200_000);
+  assert.match(notices, /CC0 1\.0/);
+  assert.match(notices, /c25d75c8c3d03d5323471168d35a0396f7187bab/);
 });
