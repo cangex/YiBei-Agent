@@ -28,15 +28,16 @@ test("server-renders the finished Yibei brand homepage", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);
 });
 
-test("homepage uses a procedural anatomical tooth instead of the STL demo", async () => {
+test("homepage uses a dedicated anatomical incisor instead of the product demo STL", async () => {
   const [homepage, heroScene] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/HeroToothScene.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(homepage, /HeroToothScene/);
   assert.doesNotMatch(homepage, /DentalScene|demo\.stl/);
-  assert.match(heroScene, /createAnatomicalTooth/);
-  assert.doesNotMatch(heroScene, /STLLoader|demo\.stl|fetch\(/);
+  assert.match(heroScene, /STLLoader/);
+  assert.match(heroScene, /anatomical-tooth-11\.stl/);
+  assert.doesNotMatch(heroScene, /demo\.stl|createAnatomicalTooth|createCrown|createRoot/);
 });
 
 test("server-renders both product routes with independent metadata", async () => {
@@ -60,4 +61,14 @@ test("server-renders both product routes with independent metadata", async () =>
 test("ships the real STL demonstration model", async () => {
   const model = await stat(new URL("../public/models/demo.stl", import.meta.url));
   assert.ok(model.size > 2_000_000);
+});
+
+test("ships the licensed FDI 11 anatomical homepage model", async () => {
+  const [model, notices] = await Promise.all([
+    stat(new URL("../public/models/anatomical-tooth-11.stl", import.meta.url)),
+    readFile(new URL("../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8"),
+  ]);
+  assert.ok(model.size > 7_000_000);
+  assert.match(notices, /10\.5281\/zenodo\.20303324/);
+  assert.match(notices, /32f8fb84fd0ceaf46b5024a4e0a77a2d/);
 });
