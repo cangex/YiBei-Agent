@@ -26,6 +26,8 @@ const AQUA = new THREE.Color(0x73cdbd);
 const AQUA_PALE = new THREE.Color(0xd9fff5);
 const SIGNAL = new THREE.Color(0xff6a43);
 const MODEL_URL = "/models/standard-molar.stl";
+const CROWN_START_RATIO = 0.53;
+const ROOT_COMPRESSION = 0.18;
 
 function smoothstep(min: number, max: number, value: number) {
   const x = THREE.MathUtils.clamp((value - min) / (max - min), 0, 1);
@@ -37,13 +39,25 @@ function prepareToothGeometry(geometry: THREE.BufferGeometry) {
   // scanning layer shares the same anatomical coordinate system.
   geometry.rotateX(-Math.PI / 2);
   geometry.computeBoundingBox();
+  const sourceBounds = geometry.boundingBox;
+  if (sourceBounds) {
+    const sourceHeight = sourceBounds.max.y - sourceBounds.min.y;
+    const crownStart = sourceBounds.min.y + sourceHeight * CROWN_START_RATIO;
+    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+    for (let index = 0; index < position.count; index++) {
+      const y = position.getY(index);
+      if (y < crownStart) position.setY(index, crownStart + (y - crownStart) * ROOT_COMPRESSION);
+    }
+    position.needsUpdate = true;
+    geometry.computeBoundingBox();
+  }
   const center = new THREE.Vector3();
   geometry.boundingBox?.getCenter(center);
   geometry.translate(-center.x, -center.y, -center.z);
   geometry.computeBoundingBox();
   const size = new THREE.Vector3();
   geometry.boundingBox?.getSize(size);
-  const scale = 3.08 / Math.max(size.y, 0.001);
+  const scale = 2.5 / Math.max(size.y, 0.001);
   geometry.scale(scale, scale, scale);
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
@@ -214,7 +228,7 @@ export function HeroToothScene({ className }: Props) {
       const profile = createSliceProfile(toothGeometry, minY, maxY);
       const toothGroup = new THREE.Group();
       const baseRotationY = 0.62;
-      toothGroup.rotation.set(-0.045, baseRotationY, 0.014);
+      toothGroup.rotation.set(0.14, baseRotationY, 0.014);
       toothGroup.position.y = 0.04;
       scene.add(toothGroup);
 
@@ -341,7 +355,7 @@ export function HeroToothScene({ className }: Props) {
 
       const scannerGroup = new THREE.Group();
       toothGroup.add(scannerGroup);
-      const scanWidth = Math.max(size.x, size.z) * 1.78;
+      const scanWidth = Math.max(size.x, size.z) * 1.34;
       scannerGroup.add(new THREE.Mesh(new THREE.BoxGeometry(scanWidth, 0.01, scanWidth), new THREE.MeshBasicMaterial({
         color: 0xbff9eb,
         transparent: true,
@@ -442,7 +456,7 @@ export function HeroToothScene({ className }: Props) {
       if (activeRig) {
         const scanY = THREE.MathUtils.lerp(activeRig.minY + 0.012, activeRig.maxY - 0.012, scanProgress);
         activeRig.group.rotation.y = activeRig.baseRotationY + Math.sin(elapsed * 0.21) * 0.095;
-        activeRig.group.rotation.x = -0.045 + Math.sin(elapsed * 0.16) * 0.018;
+        activeRig.group.rotation.x = 0.14 + Math.sin(elapsed * 0.16) * 0.022;
         activeRig.group.position.y = 0.04 + Math.sin(elapsed * 0.47) * 0.022;
         activeRig.scanner.position.y = scanY;
         activeRig.scanner.visible = resetFade > 0.02;

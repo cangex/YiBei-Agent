@@ -36,7 +36,7 @@ export default function Home() {
               <small>NORMAL · CURVATURE · DEPTH</small>
             </span>
             <span className="scan-depth-rail"><i /><i /><i /><i /><i /><i /><i /></span>
-            <span className="model-index">YB / STANDARD MOLAR · M1</span>
+            <span className="model-index">YB / SQUARE CROWN · M1</span>
           </div>
 
           <a className="product-entry product-entry-left" href="/reconstruction">

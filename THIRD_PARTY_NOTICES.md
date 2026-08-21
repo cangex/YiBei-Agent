@@ -9,4 +9,4 @@
 - License: Creative Commons CC0 1.0 Universal Public Domain Dedication
 - SHA-1: `c25d75c8c3d03d5323471168d35a0396f7187bab`
 
-The mesh is used as a general, non-patient dental visualization. It is not presented as a clinical diagnostic model.
+The homepage applies a crown-dominant display transformation to create a shorter, squarer prosthetic-tooth silhouette. The mesh is used as a general, non-patient dental visualization and is not presented as a clinical diagnostic model.

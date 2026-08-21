@@ -28,7 +28,7 @@ test("server-renders the finished Yibei brand homepage", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);
 });
 
-test("homepage uses a compact molar instead of the product demo STL", async () => {
+test("homepage uses a crown-dominant square molar instead of the product demo STL", async () => {
   const [homepage, heroScene] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/HeroToothScene.tsx", import.meta.url), "utf8"),
@@ -37,6 +37,7 @@ test("homepage uses a compact molar instead of the product demo STL", async () =
   assert.doesNotMatch(homepage, /DentalScene|demo\.stl/);
   assert.match(heroScene, /STLLoader/);
   assert.match(heroScene, /standard-molar\.stl/);
+  assert.match(heroScene, /ROOT_COMPRESSION = 0\.18/);
   assert.doesNotMatch(heroScene, /demo\.stl|createAnatomicalTooth|createCrown|createRoot/);
 });
 
