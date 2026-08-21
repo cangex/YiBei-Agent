@@ -20,6 +20,15 @@ export type DentalScenePhase =
   | "simulate"
   | "converge";
 
+export type RegionalTextureRegion = {
+  id: string;
+  enabled: boolean;
+  sides: 3 | 4 | 5 | 6;
+  wave: boolean;
+  center: [number, number, number];
+  radius: [number, number, number];
+};
+
 type Props = {
   src?: string;
   mode?: DentalSceneMode;
@@ -27,6 +36,7 @@ type Props = {
   stageProgress?: number;
   textureSides?: 3 | 4 | 5 | 6;
   wave?: boolean;
+  regionalTextures?: RegionalTextureRegion[];
   interactive?: boolean;
   className?: string;
   onLoaded?: (meta: { triangles: number; dimensions: [number, number, number] }) => void;
@@ -44,41 +54,116 @@ function ease(value: number) {
   return x * x * (3 - 2 * x);
 }
 
-function makePatternTexture(sides: number, wave: boolean) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#d8ded8";
-  ctx.fillRect(0, 0, 256, 256);
-  ctx.strokeStyle = "#68746f";
-  ctx.lineWidth = 7;
-  ctx.lineJoin = "round";
-  const radius = sides === 3 ? 34 : sides === 4 ? 30 : 28;
-  const stepX = sides === 6 ? 76 : 70;
-  const stepY = sides === 6 ? 66 : 70;
-
-  for (let row = -1; row < 6; row++) {
-    for (let col = -1; col < 6; col++) {
-      const cx = col * stepX + (sides === 6 && row % 2 ? stepX / 2 : 0);
-      const cy = row * stepY;
-      ctx.beginPath();
-      for (let index = 0; index <= sides; index++) {
-        const angle = -Math.PI / 2 + Math.PI * 2 * index / sides;
-        const wobble = wave ? Math.sin(index * 2.7 + row) * 5 : 0;
-        const x = cx + Math.cos(angle) * (radius + wobble);
-        const y = cy + Math.sin(angle) * (radius + wobble);
-        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+function createRegionalTextureMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uOpacity: { value: 0 },
+      uBoundsMin: { value: new THREE.Vector3(-1, -1, -1) },
+      uBoundsSize: { value: new THREE.Vector3(2, 2, 2) },
+      uCenter0: { value: new THREE.Vector3(0.34, 0.62, 0.55) },
+      uCenter1: { value: new THREE.Vector3(0.68, 0.4, 0.55) },
+      uCenter2: { value: new THREE.Vector3(0.52, 0.78, 0.5) },
+      uRadius0: { value: new THREE.Vector3(0.28, 0.24, 0.75) },
+      uRadius1: { value: new THREE.Vector3(0.24, 0.22, 0.75) },
+      uRadius2: { value: new THREE.Vector3(0.2, 0.18, 0.75) },
+      uMeta0: { value: new THREE.Vector4(6, 0, 13, 1) },
+      uMeta1: { value: new THREE.Vector4(4, 1, 12, 1) },
+      uMeta2: { value: new THREE.Vector4(3, 0, 14, 0) },
+      uColor0: { value: new THREE.Color(0xa7efe0) },
+      uColor1: { value: new THREE.Color(0xff8f70) },
+      uColor2: { value: new THREE.Color(0xbfc9c4) },
+    },
+    vertexShader: `
+      uniform vec3 uBoundsMin;
+      uniform vec3 uBoundsSize;
+      varying vec3 vNormalized;
+      void main() {
+        vNormalized = (position - uBoundsMin) / max(uBoundsSize, vec3(0.0001));
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
-      ctx.stroke();
-    }
-  }
+    `,
+    fragmentShader: `
+      uniform float uOpacity;
+      uniform vec3 uCenter0;
+      uniform vec3 uCenter1;
+      uniform vec3 uCenter2;
+      uniform vec3 uRadius0;
+      uniform vec3 uRadius1;
+      uniform vec3 uRadius2;
+      uniform vec4 uMeta0;
+      uniform vec4 uMeta1;
+      uniform vec4 uMeta2;
+      uniform vec3 uColor0;
+      uniform vec3 uColor1;
+      uniform vec3 uColor2;
+      varying vec3 vNormalized;
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(2.7, 2.7);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
+      float ridge(float value) {
+        float distanceToCell = abs(fract(value) - 0.5);
+        return smoothstep(0.42, 0.49, distanceToCell);
+      }
+
+      float topologyPattern(vec2 sourceUv, vec4 meta) {
+        vec2 uv = sourceUv * meta.z;
+        if (meta.y > 0.5) uv.x += sin(uv.y * 0.82) * 0.34;
+        float diagonalA = ridge(uv.x * 0.5 + uv.y * 0.866);
+        float diagonalB = ridge(-uv.x * 0.5 + uv.y * 0.866);
+        float triangular = max(ridge(uv.x), max(diagonalA, diagonalB));
+        float quadrilateral = max(ridge(uv.x), ridge(uv.y));
+        float pentagonal = max(quadrilateral, ridge(uv.x * 0.31 + uv.y * 0.95));
+        float hexagonal = max(diagonalA, max(diagonalB, ridge(uv.y)));
+        if (meta.x < 3.5) return triangular;
+        if (meta.x < 4.5) return quadrilateral;
+        if (meta.x < 5.5) return pentagonal;
+        return hexagonal;
+      }
+
+      float regionMask(vec3 center, vec3 radius, float enabled) {
+        float distanceFromCenter = length((vNormalized - center) / max(radius, vec3(0.001)));
+        return (1.0 - smoothstep(0.76, 1.0, distanceFromCenter)) * enabled;
+      }
+
+      void main() {
+        float mask0 = regionMask(uCenter0, uRadius0, uMeta0.w);
+        float mask1 = regionMask(uCenter1, uRadius1, uMeta1.w);
+        float mask2 = regionMask(uCenter2, uRadius2, uMeta2.w);
+        float line0 = topologyPattern(vNormalized.xy, uMeta0) * mask0;
+        float line1 = topologyPattern(vNormalized.xy + vec2(0.17, 0.08), uMeta1) * mask1;
+        float line2 = topologyPattern(vNormalized.xy + vec2(0.31, 0.14), uMeta2) * mask2;
+        float field = max(mask0, max(mask1, mask2));
+        float lines = max(line0, max(line1, line2));
+        if (field < 0.008) discard;
+        vec3 weightedColor = uColor0 * (mask0 + line0) + uColor1 * (mask1 + line1) + uColor2 * (mask2 + line2);
+        float weight = max(0.001, mask0 + line0 + mask1 + line1 + mask2 + line2);
+        vec3 color = weightedColor / weight;
+        float alpha = (field * 0.09 + lines * 0.48) * uOpacity;
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+}
+
+function configureRegionalTexture(material: THREE.ShaderMaterial, regions: RegionalTextureRegion[], bounds: THREE.Box3) {
+  const fallback: RegionalTextureRegion[] = [
+    { id: "R1", enabled: true, sides: 6, wave: false, center: [0.35, 0.62, 0.55], radius: [0.28, 0.24, 0.75] },
+    { id: "R2", enabled: false, sides: 4, wave: false, center: [0.68, 0.4, 0.55], radius: [0.24, 0.22, 0.75] },
+    { id: "R3", enabled: false, sides: 3, wave: false, center: [0.52, 0.78, 0.5], radius: [0.2, 0.18, 0.75] },
+  ];
+  const selected = regions.length ? regions : fallback;
+  material.uniforms.uBoundsMin.value.copy(bounds.min);
+  material.uniforms.uBoundsSize.value.copy(bounds.getSize(new THREE.Vector3()));
+  for (let index = 0; index < 3; index++) {
+    const region = selected[index] ?? fallback[index];
+    material.uniforms[`uCenter${index}`].value.set(...region.center);
+    material.uniforms[`uRadius${index}`].value.set(...region.radius);
+    material.uniforms[`uMeta${index}`].value.set(region.sides, region.wave ? 1 : 0, 10 + region.sides * 0.8, region.enabled ? 1 : 0);
+  }
 }
 
 function createPointCloud(source: THREE.BufferGeometry) {
@@ -229,18 +314,19 @@ export function DentalScene({
   stageProgress = 0,
   textureSides = 6,
   wave = false,
+  regionalTextures = [],
   interactive = true,
   className,
   onLoaded,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const loadedRef = useRef(onLoaded);
-  const visualRef = useRef({ mode, phase, stageProgress, textureSides, wave, interactive });
+  const visualRef = useRef({ mode, phase, stageProgress, textureSides, wave, regionalTextures, interactive });
 
   useEffect(() => { loadedRef.current = onLoaded; }, [onLoaded]);
   useEffect(() => {
-    visualRef.current = { mode, phase, stageProgress, textureSides, wave, interactive };
-  }, [mode, phase, stageProgress, textureSides, wave, interactive]);
+    visualRef.current = { mode, phase, stageProgress, textureSides, wave, regionalTextures, interactive };
+  }, [mode, phase, stageProgress, textureSides, wave, regionalTextures, interactive]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -301,19 +387,11 @@ export function DentalScene({
       depthWrite: false,
       blending: THREE.NormalBlending,
     });
-    const textureMaterials = [0, 1].map(() => new THREE.MeshPhysicalMaterial({
-      color: 0xe8ede7,
-      roughness: 0.44,
-      metalness: 0.02,
-      clearcoat: 0.25,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-    }));
-    const textureMaps: Array<THREE.Texture | null> = [null, null];
+    const textureMaterials = [createRegionalTextureMaterial(), createRegionalTextureMaterial()];
     let textureSlot = 0;
     let textureBlend = 1;
     let textureKey = "";
+    let regionalBounds: THREE.Box3 | null = null;
 
     const revealMaterial = new THREE.ShaderMaterial({
       uniforms: { uScanY: { value: -1 }, uOpacity: { value: 0 }, uAqua: { value: AQUA }, uSignal: { value: SIGNAL } },
@@ -456,16 +534,21 @@ export function DentalScene({
     const particles = new THREE.Points(particleGeometry, particleMaterial);
     modelGroup.add(particles);
 
-    const installPattern = (sides: number, isWave: boolean) => {
-      const nextKey = `${sides}-${isWave}`;
+    const installRegionalPlan = (regions: RegionalTextureRegion[], sides: number, isWave: boolean) => {
+      if (!regionalBounds) return;
+      const fallbackRegion: RegionalTextureRegion = {
+        id: "R1",
+        enabled: true,
+        sides,
+        wave: isWave,
+        center: [0.5, 0.58, 0.52],
+        radius: [0.34, 0.3, 0.78],
+      };
+      const selected = regions.length ? regions : [fallbackRegion];
+      const nextKey = JSON.stringify(selected);
       if (nextKey === textureKey) return;
       const nextSlot = textureKey ? 1 - textureSlot : textureSlot;
-      textureMaps[nextSlot]?.dispose();
-      textureMaps[nextSlot] = makePatternTexture(sides, isWave);
-      textureMaterials[nextSlot].map = textureMaps[nextSlot];
-      textureMaterials[nextSlot].bumpMap = textureMaps[nextSlot];
-      textureMaterials[nextSlot].bumpScale = -0.055;
-      textureMaterials[nextSlot].needsUpdate = true;
+      configureRegionalTexture(textureMaterials[nextSlot], selected, regionalBounds);
       textureSlot = nextSlot;
       textureBlend = textureKey ? 0 : 1;
       textureKey = nextKey;
@@ -487,6 +570,7 @@ export function DentalScene({
         geometry.scale(normalization, normalization, normalization);
         geometry.computeVertexNormals();
         const bounds = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute("position") as THREE.BufferAttribute);
+        regionalBounds = bounds.clone();
         bounds.getSize(size);
         minY = bounds.min.y;
         maxY = bounds.max.y;
@@ -552,7 +636,7 @@ export function DentalScene({
         scannerGroup.add(scanGrid);
         scannerGroup.add(contour, emitters);
         scannerReady = true;
-        installPattern(visualRef.current.textureSides, visualRef.current.wave);
+        installRegionalPlan(visualRef.current.regionalTextures, visualRef.current.textureSides, visualRef.current.wave);
         mount.dataset.modelState = "ready";
         loadedRef.current?.({ triangles: position.count / 3, dimensions: [sourceSize.x, sourceSize.y, sourceSize.z] });
       } catch {
@@ -586,7 +670,7 @@ export function DentalScene({
       controls.enableRotate = visual.interactive;
       controls.autoRotate = !visual.interactive && !reducedMotion;
       controls.update();
-      installPattern(visual.textureSides, visual.wave);
+      installRegionalPlan(visual.regionalTextures, visual.textureSides, visual.wave);
       textureBlend = reducedMotion ? 1 : THREE.MathUtils.damp(textureBlend, 1, 5.2, delta);
 
       const targets = visualTargets(visual.mode, visual.phase);
@@ -595,8 +679,8 @@ export function DentalScene({
       });
 
       const previousSlot = 1 - textureSlot;
-      textureMaterials[textureSlot].opacity = state.texture * textureBlend;
-      textureMaterials[previousSlot].opacity = state.texture * (1 - textureBlend);
+      textureMaterials[textureSlot].uniforms.uOpacity.value = state.texture * textureBlend;
+      textureMaterials[previousSlot].uniforms.uOpacity.value = state.texture * (1 - textureBlend);
       heatMaterial.opacity = state.heat * 0.9;
       defectMaterial.opacity = state.defects * (0.55 + Math.sin(elapsed * 5.2) * 0.25);
       particleMaterial.opacity = state.flow * 0.76;
@@ -670,7 +754,6 @@ export function DentalScene({
       observer.disconnect();
       cancelAnimationFrame(frame);
       controls.dispose();
-      textureMaps.forEach((texture) => texture?.dispose());
       const disposedGeometries = new Set<THREE.BufferGeometry>();
       const disposedMaterials = new Set<THREE.Material>();
       scene.traverse((object) => {

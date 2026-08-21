@@ -57,7 +57,8 @@ test("server-renders both product routes with independent metadata", async () =>
   assert.match(reconstruction, /读取三角网格与空间边界/);
   assert.match(twin, /<title>双微AI设计智能体及验证平台｜益贝医疗智能体<\/title>/);
   assert.match(twin, /启动双微AI设计/);
-  assert.match(twin, /六边贯通型/);
+  assert.match(twin, /分区均衡方案/);
+  assert.match(twin, /不雕刻/);
 });
 
 test("ships the real STL demonstration model", async () => {
@@ -86,11 +87,20 @@ test("product scenes use precision surface scanning and continuous stage transit
   assert.match(scene, /createPointCloud/);
   assert.match(scene, /createNormalField/);
   assert.match(scene, /uScanY/);
+  assert.match(scene, /configureRegionalTexture/);
+  assert.match(scene, /regionalTextures/);
+  assert.match(scene, /if \(field < 0\.008\) discard/);
   assert.doesNotMatch(scene, /const scanLine/);
+  assert.doesNotMatch(scene, /makePatternTexture/);
   assert.match(reconstruction, /stageProgress/);
   assert.match(reconstruction, /stepDurations/);
   assert.match(twin, /phaseProgress/);
   assert.match(twin, /phaseDurations/);
+  assert.match(twin, /分区均衡方案/);
+  assert.match(twin, /保持光滑/);
+  assert.match(twin, /不雕刻/);
+  assert.match(twin, /regionalTextures=\{scheme\.regions\}/);
+  assert.doesNotMatch(twin, /六边贯通型|波浪四边型|梯度三边型/);
   assert.match(styles, /stage-transition-veil/);
   assert.match(styles, /stage-bridge/);
 });
