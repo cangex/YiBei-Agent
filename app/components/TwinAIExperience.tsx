@@ -38,9 +38,9 @@ const schemes: Scheme[] = [
     reason: "孪生评估表明：咬合承力区采用六边拓扑，龈侧交换区采用波浪流道，邻接过渡区保持光滑，在结构稳定、流体交换与沉积风险之间取得最优平衡。",
     metrics: [92, 89, 86, 91, 88],
     regions: [
-      { id: "R1", name: "咬合承力区", enabled: true, topology: "六边拓扑", sides: 6, wave: false, width: 38, depth: 19, score: 96, center: [0.34, 0.64, 0.55], radius: [0.29, 0.24, 0.78] },
-      { id: "R2", name: "龈侧交换区", enabled: true, topology: "波浪线流道", sides: 4, wave: true, width: 42, depth: 17, score: 93, center: [0.69, 0.39, 0.52], radius: [0.23, 0.22, 0.76] },
-      { id: "R3", name: "邻接过渡区", enabled: false, topology: "保持光滑", sides: 3, wave: false, width: 0, depth: 0, score: 91, center: [0.53, 0.82, 0.5], radius: [0.2, 0.16, 0.72] },
+      { id: "R1", name: "咬合承力区", enabled: true, pattern: "topology", topology: "六边拓扑", sides: 6, wave: false, width: 38, depth: 19, score: 96, center: [0.34, 0.64, 0.55], radius: [0.29, 0.24, 0.78] },
+      { id: "R2", name: "龈侧交换区", enabled: true, pattern: "wave", topology: "波浪线流道", sides: 4, wave: true, width: 42, depth: 17, score: 93, center: [0.69, 0.39, 0.52], radius: [0.23, 0.22, 0.76] },
+      { id: "R3", name: "邻接过渡区", enabled: false, pattern: "topology", topology: "保持光滑", sides: 3, wave: false, width: 0, depth: 0, score: 91, center: [0.53, 0.82, 0.5], radius: [0.2, 0.16, 0.72] },
     ],
   },
   {
@@ -50,9 +50,9 @@ const schemes: Scheme[] = [
     reason: "两个流体薄弱区分别布置波浪线与直线流道，交换能力更强，但额外雕刻区使疲劳耐受和抗沉积表现略低于均衡方案。",
     metrics: [84, 93, 80, 83, 85],
     regions: [
-      { id: "R1", name: "咬合承力区", enabled: true, topology: "四边拓扑", sides: 4, wave: false, width: 40, depth: 17, score: 87, center: [0.34, 0.64, 0.55], radius: [0.29, 0.24, 0.78] },
-      { id: "R2", name: "龈侧交换区", enabled: true, topology: "波浪线流道", sides: 4, wave: true, width: 45, depth: 16, score: 97, center: [0.69, 0.39, 0.52], radius: [0.25, 0.23, 0.76] },
-      { id: "R3", name: "邻接过渡区", enabled: true, topology: "直线流道", sides: 4, wave: false, width: 32, depth: 15, score: 83, center: [0.53, 0.82, 0.5], radius: [0.2, 0.16, 0.72] },
+      { id: "R1", name: "咬合承力区", enabled: true, pattern: "topology", topology: "四边拓扑", sides: 4, wave: false, width: 40, depth: 17, score: 87, center: [0.34, 0.64, 0.55], radius: [0.29, 0.24, 0.78] },
+      { id: "R2", name: "龈侧交换区", enabled: true, pattern: "wave", topology: "波浪线流道", sides: 4, wave: true, width: 45, depth: 16, score: 97, center: [0.69, 0.39, 0.52], radius: [0.25, 0.23, 0.76] },
+      { id: "R3", name: "邻接过渡区", enabled: true, pattern: "straight", topology: "直线流道", sides: 4, wave: false, width: 32, depth: 15, score: 83, center: [0.53, 0.82, 0.5], radius: [0.2, 0.16, 0.72] },
     ],
   },
   {
@@ -62,16 +62,18 @@ const schemes: Scheme[] = [
     reason: "仅在两个明确承力区雕刻六边与三边拓扑，其余表面保持光滑。结构表现稳定，但龈侧区不雕刻使流体交换能力有限。",
     metrics: [95, 74, 90, 82, 93],
     regions: [
-      { id: "R1", name: "咬合承力区", enabled: true, topology: "六边拓扑", sides: 6, wave: false, width: 34, depth: 21, score: 98, center: [0.34, 0.64, 0.55], radius: [0.27, 0.23, 0.78] },
-      { id: "R2", name: "龈侧交换区", enabled: false, topology: "保持光滑", sides: 4, wave: false, width: 0, depth: 0, score: 76, center: [0.69, 0.39, 0.52], radius: [0.23, 0.22, 0.76] },
-      { id: "R3", name: "邻接过渡区", enabled: true, topology: "三边拓扑", sides: 3, wave: false, width: 29, depth: 23, score: 89, center: [0.53, 0.82, 0.5], radius: [0.19, 0.16, 0.72] },
+      { id: "R1", name: "咬合承力区", enabled: true, pattern: "topology", topology: "六边拓扑", sides: 6, wave: false, width: 34, depth: 21, score: 98, center: [0.34, 0.64, 0.55], radius: [0.27, 0.23, 0.78] },
+      { id: "R2", name: "龈侧交换区", enabled: false, pattern: "topology", topology: "保持光滑", sides: 4, wave: false, width: 0, depth: 0, score: 76, center: [0.69, 0.39, 0.52], radius: [0.23, 0.22, 0.76] },
+      { id: "R3", name: "邻接过渡区", enabled: true, pattern: "topology", topology: "三边拓扑", sides: 3, wave: false, width: 29, depth: 23, score: 89, center: [0.53, 0.82, 0.5], radius: [0.19, 0.16, 0.72] },
     ],
   },
 ];
+const schemeTexturePlans = schemes.map((scheme) => scheme.regions);
 
 const metricNames = ["结构稳定", "流体交换", "抗沉积", "抗菌定植", "疲劳耐受"];
 const visualPhases: DentalScenePhase[] = ["ingress", "segment", "generate", "simulate", "converge"];
-const phaseDurations = [1800, 3000, 3100, 3800, 2300];
+const phaseDurations = [1800, 3000, 4800, 3800, 2300];
+const modelingSteps = ["区域锁定", "路径求解", "沟槽建模"];
 
 function ease(value: number) {
   return value * value * (3 - 2 * value);
@@ -139,6 +141,7 @@ export function TwinAIExperience() {
   const simulationReady = phase >= 3 || complete;
   const scenePhase: DentalScenePhase = complete ? "converge" : running ? visualPhases[phase] : "idle";
   const overallProgress = complete ? 100 : running ? (phase + ease(phaseProgress)) / phases.length * 100 : 0;
+  const modelingStep = Math.min(modelingSteps.length - 1, Math.floor(phaseProgress * modelingSteps.length));
   return (
     <main className="product-page twin-page">
       <ProductNav section="双微AI设计智能体及验证平台" />
@@ -156,7 +159,7 @@ export function TwinAIExperience() {
 
       <section className="twin-workspace">
         <div className="twin-scene-wrap">
-          <DentalScene src={modelSrc} mode={sceneMode} phase={scenePhase} stageProgress={complete ? 1 : phaseProgress} textureSides={focusRegion.sides} wave={focusRegion.wave} regionalTextures={scheme.regions} interactive={!running} className="dental-scene twin-scene" />
+          <DentalScene src={modelSrc} mode={sceneMode} phase={scenePhase} stageProgress={complete ? 1 : phaseProgress} textureSides={focusRegion.sides} wave={focusRegion.wave} regionalTextures={scheme.regions} regionalTexturePlans={schemeTexturePlans} interactive={!running} className="dental-scene twin-scene" />
           {running && <div key={`twin-bridge-${phase}`} className="stage-transition-veil twin-transition-veil" aria-hidden="true" />}
           <div key={`region-labels-${schemeIndex}`} className="regional-callout-layer">
             {scheme.regions.map((region, index) => (
@@ -165,7 +168,16 @@ export function TwinAIExperience() {
               </div>
             ))}
           </div>
-          <div className="twin-scene-label"><span>活体数字镜像</span><strong>DT-2408 / YB</strong></div>
+          <div className="twin-scene-label"><span>曲面级数字镜像</span><strong>MICRO GEOMETRY / DT-2408</strong></div>
+          <div className={`micro-modeling-sequence ${running && phase === 2 ? "is-visible" : ""}`} aria-hidden={!(running && phase === 2)}>
+            <div><span>3D MICROSTRUCTURE</span><em>曲面法向贴合</em></div>
+            {modelingSteps.map((step, index) => (
+              <i key={step} className={`${index === modelingStep ? "is-active" : ""} ${index < modelingStep ? "is-done" : ""}`}>
+                <b>0{index + 1}</b><strong>{step}</strong><span />
+              </i>
+            ))}
+            <small>微结构视觉比例经增强</small>
+          </div>
           {(running || complete) && <div key={`phase-readout-${phase}-${complete}`} className="twin-phase-readout"><i>0{phase + 1}</i><strong>{complete ? "AI RECOMMENDATION READY" : phases[phase].title}</strong><span>{Math.round(overallProgress).toString().padStart(2, "0")}%</span></div>}
           <div className={`flow-legend ${phase === 3 ? "is-visible" : ""}`}><i /><span>仿真流体轨迹</span></div>
         </div>

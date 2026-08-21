@@ -89,6 +89,12 @@ test("product scenes use precision surface scanning and continuous stage transit
   assert.match(scene, /uScanY/);
   assert.match(scene, /configureRegionalTexture/);
   assert.match(scene, /regionalTextures/);
+  assert.match(scene, /createRegionalGeometryRig/);
+  assert.match(scene, /createSurfaceProjectionIndex/);
+  assert.match(scene, /weightA/);
+  assert.match(scene, /new THREE\.TubeGeometry/);
+  assert.match(scene, /geometry\.setDrawRange/);
+  assert.match(scene, /regional-microtexture-geometry/);
   assert.match(scene, /if \(field < 0\.008\) discard/);
   assert.doesNotMatch(scene, /const scanLine/);
   assert.doesNotMatch(scene, /makePatternTexture/);
@@ -100,7 +106,12 @@ test("product scenes use precision surface scanning and continuous stage transit
   assert.match(twin, /保持光滑/);
   assert.match(twin, /不雕刻/);
   assert.match(twin, /regionalTextures=\{scheme\.regions\}/);
+  assert.match(twin, /regionalTexturePlans=\{schemeTexturePlans\}/);
+  assert.match(twin, /pattern: "wave"/);
+  assert.match(twin, /pattern: "straight"/);
+  assert.match(twin, /micro-modeling-sequence/);
   assert.doesNotMatch(twin, /六边贯通型|波浪四边型|梯度三边型/);
   assert.match(styles, /stage-transition-veil/);
   assert.match(styles, /stage-bridge/);
+  assert.match(styles, /modeling-path-solve/);
 });
