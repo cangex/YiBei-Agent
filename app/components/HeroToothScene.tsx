@@ -28,6 +28,7 @@ const SIGNAL = new THREE.Color(0xff6a43);
 const MODEL_URL = "/models/standard-molar.stl";
 const CROWN_START_RATIO = 0.53;
 const ROOT_COMPRESSION = 0.18;
+const MODEL_SCALE = 0.75;
 
 function smoothstep(min: number, max: number, value: number) {
   const x = THREE.MathUtils.clamp((value - min) / (max - min), 0, 1);
@@ -57,7 +58,7 @@ function prepareToothGeometry(geometry: THREE.BufferGeometry) {
   geometry.computeBoundingBox();
   const size = new THREE.Vector3();
   geometry.boundingBox?.getSize(size);
-  const scale = 2.5 / Math.max(size.y, 0.001);
+  const scale = 2.5 * MODEL_SCALE / Math.max(size.y, 0.001);
   geometry.scale(scale, scale, scale);
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();

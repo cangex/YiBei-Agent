@@ -38,6 +38,7 @@ test("homepage uses a crown-dominant square molar instead of the product demo ST
   assert.match(heroScene, /STLLoader/);
   assert.match(heroScene, /standard-molar\.stl/);
   assert.match(heroScene, /ROOT_COMPRESSION = 0\.18/);
+  assert.match(heroScene, /MODEL_SCALE = 0\.75/);
   assert.doesNotMatch(heroScene, /demo\.stl|createAnatomicalTooth|createCrown|createRoot/);
 });
 
