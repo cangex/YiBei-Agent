@@ -124,6 +124,7 @@ export function ReconstructionExperience() {
             mode={currentMode}
             phase={currentPhase}
             stageProgress={complete ? 1 : stageProgress}
+            reconstructionLightWave
             interactive={!running}
             className="dental-scene reconstruction-scene"
             onLoaded={({ triangles: count }) => setTriangles(Math.round(count))}
