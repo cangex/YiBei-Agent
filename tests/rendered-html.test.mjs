@@ -22,7 +22,10 @@ test("server-renders the finished Yibei brand homepage", async () => {
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
   assert.match(html, /<title>益贝医疗智能体｜智能义齿设计与数字孪生验证<\/title>/);
-  assert.match(html, /让义齿，从几何重建/);
+  assert.match(html, /精准口腔微生态调控专家/);
+  assert.match(html, /以微纳织构技术，/);
+  assert.match(html, /探寻智能义齿/);
+  assert.match(html, /未来式/);
   assert.match(html, /href="\/reconstruction"/);
   assert.match(html, /href="\/twin-ai"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);

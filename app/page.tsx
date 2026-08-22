@@ -13,9 +13,9 @@ export default function Home() {
       </header>
 
       <section className="hero" aria-labelledby="hero-title">
-        <div className="hero-kicker reveal-1"><span className="pulse-dot" />医疗智能设计系统</div>
+        <div className="hero-kicker reveal-1"><span className="pulse-dot" />精准口腔微生态调控专家</div>
         <h1 id="hero-title" className="hero-title reveal-2">
-          让义齿，从几何重建<br />走向<span>仿生设计</span>
+          以微纳织构技术，<br />探寻智能义齿<span>未来式</span>
         </h1>
         <p className="hero-copy reveal-3">
           从超精准三维轮廓重建，到微织构智能生成与数字孪生验证。<br />
