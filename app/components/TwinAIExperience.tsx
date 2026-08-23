@@ -1,7 +1,7 @@
 "use client";
 
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
-import { DentalScene, DentalSceneMode, DentalScenePhase, RegionalTextureRegion, SimulationField } from "./DentalScene";
+import { DentalScene, DentalSceneMode, DentalScenePhase, microtextureColorCss, RegionalTextureRegion, SimulationField } from "./DentalScene";
 import { ProductNav } from "./ProductNav";
 
 const phases = [
@@ -33,45 +33,56 @@ type Scheme = {
 const schemes: Scheme[] = [
   {
     code: "A-RG",
-    name: "分区均衡方案",
+    name: "五区均衡方案",
     fit: 94,
-    reason: "孪生评估形成两处不连续承力岛与一条局部交换带，并保留邻接保护弧，在结构稳定、流体交换与沉积风险之间取得最优平衡。",
+    reason: "孪生评估建议在完整咬合面、颊侧与近中侧雕刻，舌侧和远中侧保留原表面，在承力、交换与微生态风险之间取得平衡。",
     metrics: [92, 89, 86, 91, 88],
     regions: [
-      { id: "R1", name: "双峰承力岛", enabled: true, pattern: "topology", layout: "load-pair", topology: "六边拓扑", sides: 6, wave: false, orientation: -0.2, textureAngle: 0.12, widthUm: 38, depthUm: 19, pitchUm: 168, score: 96, center: [0.37, 0.69, 0.55], radius: [0.31, 0.23, 0.68] },
-      { id: "R2", name: "龈侧交换带", enabled: true, pattern: "wave", layout: "exchange-band", topology: "波浪线流道", sides: 4, wave: true, orientation: 0.12, textureAngle: -0.22, widthUm: 42, depthUm: 17, pitchUm: 118, score: 93, center: [0.63, 0.36, 0.52], radius: [0.35, 0.27, 0.72] },
-      { id: "R3", name: "邻接保护弧", enabled: false, pattern: "topology", layout: "protect-crescent", topology: "保持光滑", sides: 3, wave: false, orientation: -0.44, widthUm: 0, depthUm: 0, pitchUm: 160, score: 91, center: [0.56, 0.76, 0.5], radius: [0.28, 0.18, 0.62] },
+      { id: "R1", name: "咬合面区", anatomicalZone: "occlusal", enabled: true, pattern: "topology", topology: "六边拓扑", sides: 6, wave: false, textureAngle: 0.08, widthUm: 38, depthUm: 20, pitchUm: 168, score: 97 },
+      { id: "R2", name: "颊侧区（前）", anatomicalZone: "buccal", enabled: true, pattern: "wave", topology: "波浪线流道", sides: 4, wave: true, textureAngle: 0.12, widthUm: 42, depthUm: 17, pitchUm: 120, score: 94 },
+      { id: "R3", name: "舌侧区（后）", anatomicalZone: "lingual", enabled: false, pattern: "topology", topology: "保持光滑", sides: 3, wave: false, widthUm: 0, depthUm: 0, pitchUm: 160, score: 91 },
+      { id: "R4", name: "近中侧区（左）", anatomicalZone: "mesial", enabled: true, pattern: "topology", topology: "四边拓扑", sides: 4, wave: false, textureAngle: -0.08, widthUm: 34, depthUm: 18, pitchUm: 154, score: 92 },
+      { id: "R5", name: "远中侧区（右）", anatomicalZone: "distal", enabled: false, pattern: "topology", topology: "保持光滑", sides: 3, wave: false, widthUm: 0, depthUm: 0, pitchUm: 160, score: 90 },
     ],
   },
   {
     code: "B-FL",
     name: "交换优先方案",
     fit: 87,
-    reason: "以龈侧环流带和纵向交换支路构成连续导流网络，同时避开主要咬合接触岛；交换能力最强，但雕刻覆盖增加使疲劳耐受略低。",
+    reason: "咬合面保留原表面，四个侧面分别生成波浪或直线流道，形成环绕牙冠的高交换方案，但雕刻覆盖率更高。",
     metrics: [80, 96, 79, 86, 82],
     regions: [
-      { id: "R1", name: "接触保护岛", enabled: false, pattern: "topology", layout: "load-cluster", topology: "保持光滑", sides: 4, wave: false, orientation: -0.08, widthUm: 0, depthUm: 0, pitchUm: 154, score: 90, center: [0.42, 0.7, 0.55], radius: [0.33, 0.23, 0.7] },
-      { id: "R2", name: "龈侧环流带", enabled: true, pattern: "wave", layout: "exchange-band", topology: "波浪线流道", sides: 4, wave: true, orientation: -0.08, textureAngle: -0.34, widthUm: 45, depthUm: 16, pitchUm: 124, score: 98, center: [0.52, 0.32, 0.52], radius: [0.47, 0.3, 0.76] },
-      { id: "R3", name: "纵向交换支路", enabled: true, pattern: "straight", layout: "flow-network", topology: "直线流道", sides: 4, wave: false, orientation: -0.16, textureAngle: 0.42, widthUm: 32, depthUm: 15, pitchUm: 112, score: 95, center: [0.56, 0.57, 0.5], radius: [0.39, 0.34, 0.72] },
+      { id: "R1", name: "咬合面区", anatomicalZone: "occlusal", enabled: false, pattern: "topology", topology: "保持光滑", sides: 6, wave: false, widthUm: 0, depthUm: 0, pitchUm: 168, score: 92 },
+      { id: "R2", name: "颊侧区（前）", anatomicalZone: "buccal", enabled: true, pattern: "wave", topology: "波浪线流道", sides: 4, wave: true, textureAngle: 0.14, widthUm: 45, depthUm: 16, pitchUm: 124, score: 98 },
+      { id: "R3", name: "舌侧区（后）", anatomicalZone: "lingual", enabled: true, pattern: "straight", topology: "直线流道", sides: 4, wave: false, textureAngle: 1.42, widthUm: 36, depthUm: 15, pitchUm: 112, score: 96 },
+      { id: "R4", name: "近中侧区（左）", anatomicalZone: "mesial", enabled: true, pattern: "wave", topology: "波浪线流道", sides: 4, wave: true, textureAngle: 0.24, widthUm: 40, depthUm: 17, pitchUm: 118, score: 95 },
+      { id: "R5", name: "远中侧区（右）", anatomicalZone: "distal", enabled: true, pattern: "straight", topology: "直线流道", sides: 4, wave: false, textureAngle: 1.36, widthUm: 32, depthUm: 15, pitchUm: 108, score: 94 },
     ],
   },
   {
     code: "C-ST",
     name: "承力优先方案",
     fit: 84,
-    reason: "只在三个接触峰形成紧凑承力岛，并以短承力脊桥连接高应力路径；侧壁保护带不雕刻，结构表现最佳但流体交换能力有限。",
+    reason: "咬合面使用五边拓扑，舌侧与远中侧采用局部拓扑强化，颊侧和近中侧保持光滑，减少侧壁雕刻对结构的扰动。",
     metrics: [97, 71, 92, 83, 95],
     regions: [
-      { id: "R1", name: "主接触峰群", enabled: true, pattern: "topology", layout: "load-cluster", topology: "六边拓扑", sides: 6, wave: false, orientation: -0.1, textureAngle: 0.08, widthUm: 34, depthUm: 21, pitchUm: 172, score: 99, center: [0.39, 0.72, 0.55], radius: [0.34, 0.24, 0.7] },
-      { id: "R2", name: "承力脊桥", enabled: true, pattern: "topology", layout: "ridge-bridge", topology: "五边拓扑", sides: 5, wave: false, orientation: 0.34, textureAngle: -0.18, widthUm: 30, depthUm: 23, pitchUm: 148, score: 94, center: [0.62, 0.61, 0.52], radius: [0.31, 0.2, 0.66] },
-      { id: "R3", name: "侧壁保护带", enabled: false, pattern: "topology", layout: "protect-crescent", topology: "保持光滑", sides: 3, wave: false, orientation: 0.18, widthUm: 0, depthUm: 0, pitchUm: 160, score: 92, center: [0.56, 0.37, 0.5], radius: [0.43, 0.25, 0.74] },
+      { id: "R1", name: "咬合面区", anatomicalZone: "occlusal", enabled: true, pattern: "topology", topology: "五边拓扑", sides: 5, wave: false, textureAngle: -0.1, widthUm: 34, depthUm: 23, pitchUm: 150, score: 99 },
+      { id: "R2", name: "颊侧区（前）", anatomicalZone: "buccal", enabled: false, pattern: "topology", topology: "保持光滑", sides: 4, wave: false, widthUm: 0, depthUm: 0, pitchUm: 160, score: 93 },
+      { id: "R3", name: "舌侧区（后）", anatomicalZone: "lingual", enabled: true, pattern: "topology", topology: "三边拓扑", sides: 3, wave: false, textureAngle: 0.16, widthUm: 30, depthUm: 21, pitchUm: 142, score: 95 },
+      { id: "R4", name: "近中侧区（左）", anatomicalZone: "mesial", enabled: false, pattern: "topology", topology: "保持光滑", sides: 4, wave: false, widthUm: 0, depthUm: 0, pitchUm: 160, score: 92 },
+      { id: "R5", name: "远中侧区（右）", anatomicalZone: "distal", enabled: true, pattern: "topology", topology: "六边拓扑", sides: 6, wave: false, textureAngle: -0.14, widthUm: 36, depthUm: 24, pitchUm: 172, score: 96 },
     ],
   },
 ];
 const parallelSchemeRegions = schemes.map((scheme) => scheme.regions);
+
+function microtextureColorStyle(region: RegionalTextureRegion) {
+  return { "--region-color": microtextureColorCss(region) } as CSSProperties;
+}
+
 const metricNames = ["结构稳定", "流体交换", "抗沉积", "抗菌定植", "疲劳耐受"];
 const visualPhases: DentalScenePhase[] = ["ingress", "baseline", "generate", "recalculate", "converge"];
-const phaseDurations = [1800, 18000, 7200, 14000, 2300];
+const phaseDurations = [1800, 21000, 7200, 16000, 2300];
 const modelingSteps = ["融合场锁定", "区域生长", "纹理匹配", "逐区雕刻"];
 const simulationFields: Array<{ id: Exclude<SimulationField, "none">; name: string; code: string; note: string }> = [
   { id: "mechanics", name: "力学响应场", code: "MECHANICAL", note: "应力集中 · 结构稳定 · 疲劳风险" },
@@ -102,9 +113,9 @@ const simulationStages: Record<Exclude<SimulationField, "none">, Array<{ end: nu
     { end: 1, label: "定植网络扩张", code: "COLONY GROWTH" },
   ],
   fusion: [
-    { end: 0.24, label: "三场空间分层", code: "FIELD SEPARATION" },
-    { end: 0.52, label: "风险约束对齐", code: "CONSTRAINT ALIGN" },
-    { end: 0.78, label: "冲突区域消解", code: "CONFLICT RESOLVE" },
+    { end: 0.18, label: "三场空间分层", code: "FIELD SEPARATION" },
+    { end: 0.45, label: "约束路径对齐", code: "CONSTRAINT ALIGN" },
+    { end: 0.7, label: "冲突节点消解", code: "CONFLICT RESOLVE" },
     { end: 1, label: "设计置信场收敛", code: "DESIGN CONFIDENCE" },
   ],
 };
@@ -134,16 +145,16 @@ const simulationEvidence: Record<Exclude<SimulationField, "none">, Array<{ label
 function resolveSimulationState(phase: number, progress: number, complete: boolean): { field: SimulationField; progress: number } {
   if (complete) return { field: "none", progress: 0 };
   if (phase === 1) {
-    if (progress < 0.28) return { field: "mechanics", progress: progress / 0.28 };
-    if (progress < 0.57) return { field: "fluid", progress: (progress - 0.28) / 0.29 };
-    if (progress < 0.8) return { field: "bio", progress: (progress - 0.57) / 0.23 };
-    return { field: "fusion", progress: (progress - 0.8) / 0.2 };
+    if (progress < 0.25) return { field: "mechanics", progress: progress / 0.25 };
+    if (progress < 0.52) return { field: "fluid", progress: (progress - 0.25) / 0.27 };
+    if (progress < 0.72) return { field: "bio", progress: (progress - 0.52) / 0.2 };
+    return { field: "fusion", progress: (progress - 0.72) / 0.28 };
   }
   if (phase === 3) {
-    if (progress < 0.24) return { field: "mechanics", progress: progress / 0.24 };
-    if (progress < 0.54) return { field: "fluid", progress: (progress - 0.24) / 0.3 };
-    if (progress < 0.78) return { field: "bio", progress: (progress - 0.54) / 0.24 };
-    return { field: "fusion", progress: (progress - 0.78) / 0.22 };
+    if (progress < 0.22) return { field: "mechanics", progress: progress / 0.22 };
+    if (progress < 0.49) return { field: "fluid", progress: (progress - 0.22) / 0.27 };
+    if (progress < 0.71) return { field: "bio", progress: (progress - 0.49) / 0.22 };
+    return { field: "fusion", progress: (progress - 0.71) / 0.29 };
   }
   return { field: "none", progress: 0 };
 }
@@ -225,7 +236,8 @@ export function TwinAIExperience() {
   const simulationReady = phase >= 3 || complete;
   const parallelEnsembleVisible = running && phase >= 2;
   const schemeRailVisible = parallelEnsembleVisible || complete;
-  const regionalLayoutVisible = complete || (running && phase === 4 && phaseProgress > 0.72);
+  const regionalLayoutVisible = complete || (running && phase >= 2);
+  const regionalCalloutsVisible = complete || (running && phase === 4 && phaseProgress > 0.72);
   const scenePhase: DentalScenePhase = complete ? "converge" : running ? visualPhases[phase] : "idle";
   const simulationFieldIndex = simulationFields.findIndex((field) => field.id === simulationField);
   const activeSimulationField = simulationFields[Math.max(0, simulationFieldIndex)];
@@ -242,7 +254,7 @@ export function TwinAIExperience() {
       <section className="twin-heading">
         <div>
           <span className="eyebrow">PRODUCT 02 · MICROTEXTURE × DIGITAL TWIN</span>
-          <h1>在微米尺度，<br />预演一副义齿的<span>未来。</span></h1>
+          <h1>每一处微织构，<br />都经过<em>数字孪生</em><br /><span>预演。</span></h1>
         </div>
         <div className="twin-heading-copy">
           <p>AI决定何处雕刻、雕刻何种微织构；数字孪生在制造前验证力学与生物特性。</p>
@@ -259,11 +271,12 @@ export function TwinAIExperience() {
               <button
                 type="button"
                 key={region.id}
-                disabled={running || !regionalLayoutVisible}
+                disabled={running || !regionalCalloutsVisible}
                 aria-pressed={selectedRegionId === region.id}
                 onClick={() => setSelectedRegionId((current) => current === region.id ? null : region.id)}
                 onMouseEnter={() => { if (complete) setSelectedRegionId(region.id); }}
-                className={`zone-callout zone-${index + 1} region-color-${index + 1} ${region.enabled ? "" : "is-untextured"} ${regionalLayoutVisible ? "is-visible" : ""} ${sceneFocusRegionId === region.id || selectedRegionId === region.id ? "is-current" : ""}`}
+                className={`zone-callout zone-${index + 1} ${region.enabled ? "" : "is-untextured"} ${regionalCalloutsVisible ? "is-visible" : ""} ${sceneFocusRegionId === region.id || selectedRegionId === region.id ? "is-current" : ""}`}
+                style={microtextureColorStyle(region)}
               >
                 <i />{region.id} · {region.name}<b>{visibleScheme ? region.enabled ? region.topology : "不雕刻" : "候选区"}</b>
               </button>
@@ -311,9 +324,9 @@ export function TwinAIExperience() {
               ))}
             </div>
           </div>
-          <div className={`region-color-legend ${regionalLayoutVisible ? "is-visible" : ""}`} aria-label="义齿表面区域图例">
-            <span>ON-MODEL REGIONS</span>
-            {scheme.regions.map((region, index) => (
+          <div className={`region-color-legend ${regionalLayoutVisible ? "is-visible" : ""}`} aria-label="微织构类型图例">
+            <span>MICROTEXTURE TYPES</span>
+            {scheme.regions.map((region) => (
               <button
                 type="button"
                 key={region.id}
@@ -322,14 +335,14 @@ export function TwinAIExperience() {
                 onClick={() => setSelectedRegionId((current) => current === region.id ? null : region.id)}
                 className={`${selectedRegionId === region.id || sceneFocusRegionId === region.id ? "is-current" : ""} ${region.enabled ? "" : "is-untextured"}`}
               >
-                <i className={`region-color-${index + 1}`} /><strong>{region.id}</strong><small>{visibleScheme ? region.enabled ? region.topology : "保留原表面" : "候选表面区域"}</small>
+                <i style={microtextureColorStyle(region)} /><strong>{region.id}</strong><small>{visibleScheme ? region.enabled ? region.topology : "保留原表面" : "候选表面区域"}</small>
               </button>
             ))}
           </div>
           <div className={`surface-design-readout ${regionalLayoutVisible ? "is-visible" : ""}`}>
             <span>{complete && !selectedRegionId ? "WHOLE-TOOTH LAYOUT" : `SURFACE REGION / ${inspectedRegion.id}`}</span>
             <strong>{complete && !selectedRegionId ? "整牙微织构布局已生成" : `${inspectedRegion.name} · ${inspectedRegion.enabled ? inspectedRegion.topology : "不雕刻"}`}</strong>
-            <small>{complete && !selectedRegionId ? "颜色对应区域，沟槽形态对应纹理类型" : inspectedRegion.enabled ? `${inspectedRegion.widthUm} μm 宽 · ${inspectedRegion.depthUm} μm 深 · ${inspectedRegion.pitchUm} μm 间距` : "该区域保留测试 STL 原始陶瓷表面"}</small>
+            <small>{complete && !selectedRegionId ? "颜色与沟槽形态共同对应微织构类型" : inspectedRegion.enabled ? `${inspectedRegion.widthUm} μm 宽 · ${inspectedRegion.depthUm} μm 深 · ${inspectedRegion.pitchUm} μm 间距` : "该区域保留测试 STL 原始陶瓷表面"}</small>
           </div>
           <div className={`micro-modeling-sequence surface-modeling-sequence ${modelingSequenceVisible ? "is-visible" : ""}`} aria-hidden={!modelingSequenceVisible}>
             <div><span>ON-SURFACE MICROGEOMETRY</span><em>{focusRegion.id} · {focusRegion.name}</em></div>
@@ -364,7 +377,7 @@ export function TwinAIExperience() {
           </div>
 
           <div className={`surface-region-inspector ${visibleScheme && !simulationVisible && !parallelEnsembleVisible ? "is-visible" : ""} ${simulationVisible || parallelEnsembleVisible ? "is-suppressed" : ""}`}>
-            <div><span><i className={`region-color-${scheme.regions.indexOf(inspectedRegion) + 1}`} />SURFACE REGION</span><em>{inspectedRegion.id} / {inspectedRegion.name}</em></div>
+            <div><span><i style={microtextureColorStyle(inspectedRegion)} />SURFACE REGION</span><em>{inspectedRegion.id} / {inspectedRegion.name}</em></div>
             <strong>{inspectedRegion.enabled ? inspectedRegion.topology : "不雕刻 · 保留原表面"}</strong>
             <p><span><small>宽度</small><b>{inspectedRegion.enabled ? inspectedRegion.widthUm : "—"}<i>{inspectedRegion.enabled ? " μm" : ""}</i></b></span><span><small>深度</small><b>{inspectedRegion.enabled ? inspectedRegion.depthUm : "—"}<i>{inspectedRegion.enabled ? " μm" : ""}</i></b></span><span><small>间距*</small><b>{inspectedRegion.enabled ? inspectedRegion.pitchUm : "—"}<i>{inspectedRegion.enabled ? " μm" : ""}</i></b></span></p>
             <small>* 间距为当前 AI 演示方案设定；沟槽宽度与深度遵循资料范围。</small>
@@ -373,7 +386,7 @@ export function TwinAIExperience() {
           <div key={`region-decisions-${schemeIndex}`} className={`region-decision-stream ${visibleScheme && !simulationVisible && !parallelEnsembleVisible ? "is-visible" : ""} ${simulationVisible || parallelEnsembleVisible ? "is-suppressed" : ""}`} aria-label="分区雕刻决策">
             <div className="region-decision-head"><span>区域雕刻决策</span><em>仿真适配</em></div>
             {scheme.regions.map((region) => (
-              <button type="button" key={region.id} disabled={running} onClick={() => setSelectedRegionId((current) => current === region.id ? null : region.id)} className={`${region.enabled ? "" : "is-untextured"} ${selectedRegionId === region.id ? "is-current" : ""}`}>
+              <button type="button" key={region.id} disabled={running} onClick={() => setSelectedRegionId((current) => current === region.id ? null : region.id)} className={`${region.enabled ? "" : "is-untextured"} ${selectedRegionId === region.id ? "is-current" : ""}`} style={microtextureColorStyle(region)}>
                 <i>{region.id}</i>
                 <strong>{region.name}<small>{region.enabled ? `${region.widthUm} × ${region.depthUm} μm` : "保留原表面"}</small></strong>
                 <em>{region.enabled ? region.topology : "不雕刻"}</em>

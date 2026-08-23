@@ -6,6 +6,7 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 export type DentalSceneMode = "porcelain" | "scan" | "heatmap" | "repaired" | "texture" | "flow";
+export type AnatomicalCrownZone = "occlusal" | "buccal" | "lingual" | "mesial" | "distal";
 export type DentalScenePhase =
   | "idle"
   | "parse"
@@ -34,11 +35,65 @@ export type RegionalTextureRegion = {
   widthUm?: number;
   depthUm?: number;
   pitchUm?: number;
-  center: [number, number, number];
-  radius: [number, number, number];
+  anatomicalZone?: AnatomicalCrownZone;
+  /**
+   * A region is authored as either a closed anatomical outline or a variable-width
+   * surface corridor.  The legacy envelope remains optional for uploaded/fallback
+   * plans, but product schemes use the spline description exclusively.
+   */
+  surfaceShape?: {
+    paths: Array<{
+      kind: "outline" | "corridor";
+      points: Array<[number, number]>;
+      widths?: number[];
+    }>;
+    edgeSoftness?: number;
+  };
+  center?: [number, number, number];
+  radius?: [number, number, number];
 };
 
 export type SimulationField = "none" | "mechanics" | "fluid" | "bio" | "fusion";
+
+export type MicrotextureVisualKey =
+  | "topology-3"
+  | "topology-4"
+  | "topology-5"
+  | "topology-6"
+  | "straight"
+  | "wave"
+  | "none";
+
+export const MICROTEXTURE_COLORS: Record<MicrotextureVisualKey, string> = {
+  "topology-3": "#9ea7ff",
+  "topology-4": "#d7bc73",
+  "topology-5": "#68b8d1",
+  "topology-6": "#73d2bd",
+  straight: "#7898e8",
+  wave: "#ff8064",
+  none: "#9ba7a2",
+};
+
+export function microtextureVisualKey(
+  region: Pick<RegionalTextureRegion, "enabled" | "pattern" | "sides">,
+): MicrotextureVisualKey {
+  if (!region.enabled) return "none";
+  if (region.pattern === "wave") return "wave";
+  if (region.pattern === "straight") return "straight";
+  return `topology-${region.sides}` as MicrotextureVisualKey;
+}
+
+export function microtextureColorCss(
+  region: Pick<RegionalTextureRegion, "enabled" | "pattern" | "sides">,
+) {
+  return MICROTEXTURE_COLORS[microtextureVisualKey(region)];
+}
+
+function microtextureColorNumber(
+  region: Pick<RegionalTextureRegion, "enabled" | "pattern" | "sides">,
+) {
+  return Number.parseInt(microtextureColorCss(region).slice(1), 16);
+}
 
 type Props = {
   src?: string;
@@ -78,6 +133,7 @@ type RegionalGeometryRig = {
 };
 type SurfaceProjectionIndex = {
   bins: number[][];
+  axisBins: Record<"xy" | "xz" | "zy", number[][]>;
   divisions: number;
   bounds: THREE.Box3;
   size: THREE.Vector3;
@@ -160,6 +216,10 @@ type BioEntityRig = {
 type FusionLayerRig = {
   group: THREE.Group;
   materials: THREE.ShaderMaterial[];
+  constraintLines: THREE.LineSegments<THREE.BufferGeometry, THREE.ShaderMaterial>[];
+  conflictPoints: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  fieldContours: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>[];
+  confidenceLines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>[];
 };
 type EnsembleParticleRig = {
   count: number;
@@ -169,6 +229,7 @@ type EnsembleParticleRig = {
 };
 type EnsembleSchemeRig = {
   group: THREE.Group;
+  hitMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
   regions: RegionalTextureRegion[];
   baseMaterial: THREE.MeshPhysicalMaterial;
   patchRig: SurfacePatchRig;
@@ -181,6 +242,7 @@ type EnsembleSchemeRig = {
   bioNetworkRig: BioNetworkRig;
   bioRiskMaterial: THREE.ShaderMaterial;
   bioRiskPoints: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  fusionRig: FusionLayerRig;
   particles: EnsembleParticleRig;
 };
 
@@ -222,7 +284,7 @@ function createRegionalTextureMaterial() {
       uCarve1: { value: 0 },
       uCarve2: { value: 0 },
       uColor0: { value: new THREE.Color(0x73d2bd) },
-      uColor1: { value: new THREE.Color(0xff8064) },
+      uColor1: { value: new THREE.Color(0x7898e8) },
       uColor2: { value: new THREE.Color(0x9ea7ff) },
     },
     vertexShader: `
@@ -368,35 +430,115 @@ function createRegionalTextureMaterial() {
   });
 }
 
+type SampledRegionPath = {
+  kind: "outline" | "corridor";
+  points: THREE.Vector2[];
+  widths: number[];
+  cumulative: number[];
+  totalLength: number;
+  centroid: THREE.Vector2;
+};
+
+const sampledRegionShapeCache = new Map<string, SampledRegionPath[]>();
+
+function regionEnvelope(region: RegionalTextureRegion) {
+  if (!region.surfaceShape?.paths.length) {
+    const center = region.center ?? [0.5, 0.55, 0.52];
+    const radius = region.radius ?? [0.32, 0.28, 0.72];
+    return { centerX: center[0], centerY: center[1], radiusX: radius[0], radiusY: radius[1] };
+  }
+  let minX = 1;
+  let minY = 1;
+  let maxX = 0;
+  let maxY = 0;
+  region.surfaceShape.paths.forEach((path) => {
+    path.points.forEach((point, index) => {
+      const width = path.kind === "corridor" ? path.widths?.[index] ?? path.widths?.[0] ?? 0.06 : 0.012;
+      minX = Math.min(minX, point[0] - width);
+      minY = Math.min(minY, point[1] - width);
+      maxX = Math.max(maxX, point[0] + width);
+      maxY = Math.max(maxY, point[1] + width);
+    });
+  });
+  const padding = 0.025;
+  minX = THREE.MathUtils.clamp(minX - padding, 0, 1);
+  minY = THREE.MathUtils.clamp(minY - padding, 0, 1);
+  maxX = THREE.MathUtils.clamp(maxX + padding, 0, 1);
+  maxY = THREE.MathUtils.clamp(maxY + padding, 0, 1);
+  return {
+    centerX: (minX + maxX) * 0.5,
+    centerY: (minY + maxY) * 0.5,
+    radiusX: Math.max(0.035, (maxX - minX) * 0.5),
+    radiusY: Math.max(0.035, (maxY - minY) * 0.5),
+  };
+}
+
+function sampledRegionPaths(region: RegionalTextureRegion) {
+  if (!region.surfaceShape?.paths.length) return [];
+  const cacheKey = JSON.stringify(region.surfaceShape);
+  const cached = sampledRegionShapeCache.get(cacheKey);
+  if (cached) return cached;
+  const sampled = region.surfaceShape.paths.map((path) => {
+    const controlPoints = path.points.map(([x, y]) => new THREE.Vector3(x, y, 0));
+    const closed = path.kind === "outline";
+    const curve = new THREE.CatmullRomCurve3(controlPoints, closed, "centripetal", 0.28);
+    const sampleCount = Math.max(32, controlPoints.length * 10);
+    const points = curve.getPoints(sampleCount).map((point) => new THREE.Vector2(point.x, point.y));
+    if (closed) points.pop();
+    const widths = points.map((_, sampleIndex) => {
+      if (path.kind === "outline") return 0;
+      const unit = sampleIndex / Math.max(1, points.length - 1);
+      const widthProfile = path.widths?.length ? path.widths : [0.06];
+      const scaled = unit * Math.max(0, widthProfile.length - 1);
+      const lower = Math.floor(scaled);
+      const upper = Math.min(widthProfile.length - 1, lower + 1);
+      return THREE.MathUtils.lerp(widthProfile[lower], widthProfile[upper], scaled - lower);
+    });
+    const cumulative = [0];
+    let totalLength = 0;
+    for (let index = 1; index < points.length; index++) {
+      totalLength += points[index].distanceTo(points[index - 1]);
+      cumulative.push(totalLength);
+    }
+    if (closed && points.length > 2) totalLength += points[0].distanceTo(points.at(-1)!);
+    const centroid = points.reduce((sum, point) => sum.add(point), new THREE.Vector2()).multiplyScalar(1 / Math.max(1, points.length));
+    return { kind: path.kind, points, widths, cumulative, totalLength, centroid };
+  });
+  sampledRegionShapeCache.set(cacheKey, sampled);
+  return sampled;
+}
+
 function configureRegionalTexture(material: THREE.ShaderMaterial, regions: RegionalTextureRegion[], bounds: THREE.Box3) {
   const fallback: RegionalTextureRegion[] = [
     { id: "R1", enabled: true, pattern: "topology", sides: 6, wave: false, widthUm: 38, depthUm: 19, pitchUm: 168, center: [0.35, 0.62, 0.55], radius: [0.28, 0.24, 0.75] },
     { id: "R2", enabled: false, pattern: "straight", sides: 4, wave: false, widthUm: 40, depthUm: 18, pitchUm: 150, center: [0.68, 0.4, 0.55], radius: [0.24, 0.22, 0.75] },
     { id: "R3", enabled: false, pattern: "topology", sides: 3, wave: false, widthUm: 32, depthUm: 20, pitchUm: 146, center: [0.52, 0.78, 0.5], radius: [0.2, 0.18, 0.75] },
   ];
-  const colors = [0x73d2bd, 0xff8064, 0x9ea7ff];
   const selected = regions.length ? regions : fallback;
   material.uniforms.uBoundsMin.value.copy(bounds.min);
   material.uniforms.uBoundsSize.value.copy(bounds.getSize(new THREE.Vector3()));
   for (let index = 0; index < 3; index++) {
     const region = selected[index] ?? fallback[index];
-    material.uniforms[`uCenter${index}`].value.set(...region.center);
-    material.uniforms[`uRadius${index}`].value.set(...region.radius);
+    const envelope = regionEnvelope(region);
+    material.uniforms[`uCenter${index}`].value.set(envelope.centerX, envelope.centerY, region.center?.[2] ?? 0.55);
+    material.uniforms[`uRadius${index}`].value.set(envelope.radiusX, envelope.radiusY, region.radius?.[2] ?? 0.72);
     const patternCode = region.pattern === "wave" ? 1 : region.pattern === "straight" ? 2 : 0;
     const widthUm = region.widthUm ?? 38;
     const depthUm = region.depthUm ?? 19;
     const pitchUm = region.pitchUm ?? 160;
     material.uniforms[`uMeta${index}`].value.set(region.sides, patternCode, 13_062 / pitchUm, region.enabled ? 1 : 0.28);
     material.uniforms[`uPhysical${index}`].value.set(widthUm / pitchUm, depthUm / 30, pitchUm, region.enabled ? 1 : 0);
-    material.uniforms[`uColor${index}`].value.setHex(region.enabled ? colors[index] : 0x9ba7a2);
+    material.uniforms[`uColor${index}`].value.setHex(microtextureColorNumber(region));
   }
 }
 
 function createRegionLayout(region: RegionalTextureRegion, regionIndex: number): LayoutPath[] {
   if (!region.enabled) return [];
-  const [centerX, centerY] = region.center;
-  const radiusX = region.radius[0] * 0.88;
-  const radiusY = region.radius[1] * 0.88;
+  const envelope = regionEnvelope(region);
+  const centerX = envelope.centerX;
+  const centerY = envelope.centerY;
+  const radiusX = envelope.radiusX * 0.88;
+  const radiusY = envelope.radiusY * 0.88;
   const paths: LayoutPath[] = [];
 
   if (region.pattern === "straight" || region.pattern === "wave") {
@@ -451,28 +593,43 @@ function createRegionLayout(region: RegionalTextureRegion, regionIndex: number):
 
 function createSurfaceProjectionIndex(source: THREE.BufferGeometry, bounds: THREE.Box3): SurfaceProjectionIndex {
   const divisions = 42;
-  const bins = Array.from({ length: divisions * divisions }, () => [] as number[]);
+  const axisBins: Record<"xy" | "xz" | "zy", number[][]> = {
+    xy: Array.from({ length: divisions * divisions }, () => [] as number[]),
+    xz: Array.from({ length: divisions * divisions }, () => [] as number[]),
+    zy: Array.from({ length: divisions * divisions }, () => [] as number[]),
+  };
   const size = bounds.getSize(new THREE.Vector3());
   const position = source.getAttribute("position") as THREE.BufferAttribute;
   const normal = source.getAttribute("normal") as THREE.BufferAttribute;
+  const normalizedCoordinate = (axis: "x" | "y" | "z", index: number) => {
+    const value = axis === "x" ? position.getX(index) : axis === "y" ? position.getY(index) : position.getZ(index);
+    const minimum = axis === "x" ? bounds.min.x : axis === "y" ? bounds.min.y : bounds.min.z;
+    const span = axis === "x" ? size.x : axis === "y" ? size.y : size.z;
+    return (value - minimum) / Math.max(span, 0.001);
+  };
   for (let triangle = 0; triangle < position.count; triangle += 3) {
-    const ax = (position.getX(triangle) - bounds.min.x) / Math.max(size.x, 0.001);
-    const ay = (position.getY(triangle) - bounds.min.y) / Math.max(size.y, 0.001);
-    const bx = (position.getX(triangle + 1) - bounds.min.x) / Math.max(size.x, 0.001);
-    const by = (position.getY(triangle + 1) - bounds.min.y) / Math.max(size.y, 0.001);
-    const cx = (position.getX(triangle + 2) - bounds.min.x) / Math.max(size.x, 0.001);
-    const cy = (position.getY(triangle + 2) - bounds.min.y) / Math.max(size.y, 0.001);
-    const minColumn = THREE.MathUtils.clamp(Math.floor(Math.min(ax, bx, cx) * divisions), 0, divisions - 1);
-    const maxColumn = THREE.MathUtils.clamp(Math.floor(Math.max(ax, bx, cx) * divisions), 0, divisions - 1);
-    const minRow = THREE.MathUtils.clamp(Math.floor(Math.min(ay, by, cy) * divisions), 0, divisions - 1);
-    const maxRow = THREE.MathUtils.clamp(Math.floor(Math.max(ay, by, cy) * divisions), 0, divisions - 1);
-    for (let row = minRow; row <= maxRow; row++) {
-      for (let column = minColumn; column <= maxColumn; column++) {
-        bins[row * divisions + column].push(triangle);
+    const fillAxisBins = (plane: "xy" | "xz" | "zy", horizontal: "x" | "z", vertical: "y" | "z") => {
+      const aU = normalizedCoordinate(horizontal, triangle);
+      const aV = normalizedCoordinate(vertical, triangle);
+      const bU = normalizedCoordinate(horizontal, triangle + 1);
+      const bV = normalizedCoordinate(vertical, triangle + 1);
+      const cU = normalizedCoordinate(horizontal, triangle + 2);
+      const cV = normalizedCoordinate(vertical, triangle + 2);
+      const minColumn = THREE.MathUtils.clamp(Math.floor(Math.min(aU, bU, cU) * divisions), 0, divisions - 1);
+      const maxColumn = THREE.MathUtils.clamp(Math.floor(Math.max(aU, bU, cU) * divisions), 0, divisions - 1);
+      const minRow = THREE.MathUtils.clamp(Math.floor(Math.min(aV, bV, cV) * divisions), 0, divisions - 1);
+      const maxRow = THREE.MathUtils.clamp(Math.floor(Math.max(aV, bV, cV) * divisions), 0, divisions - 1);
+      for (let row = minRow; row <= maxRow; row++) {
+        for (let column = minColumn; column <= maxColumn; column++) {
+          axisBins[plane][row * divisions + column].push(triangle);
+        }
       }
-    }
+    };
+    fillAxisBins("xy", "x", "y");
+    fillAxisBins("xz", "x", "z");
+    fillAxisBins("zy", "z", "y");
   }
-  return { bins, divisions, bounds: bounds.clone(), size, position, normal };
+  return { bins: axisBins.xy, axisBins, divisions, bounds: bounds.clone(), size, position, normal };
 }
 
 function projectLayoutPath(layout: LayoutPath, surface: SurfaceProjectionIndex, surfaceOffset: number) {
@@ -673,9 +830,9 @@ function honeycombBoundaryDistanceUm(xUm: number, yUm: number, pitchUm: number) 
   return Math.max(0, (secondNearest - nearest) * 0.5);
 }
 
-function microtextureDistanceUm(xUm: number, yUm: number, region: RegionalTextureRegion) {
+function microtextureDistanceUm(xUm: number, yUm: number, region: RegionalTextureRegion, orientation = region.textureAngle ?? 0) {
   const pitchUm = Math.max(60, region.pitchUm ?? 160);
-  const [orientedX, orientedY] = rotateRegionCoordinates(xUm, yUm, region.textureAngle ?? 0);
+  const [orientedX, orientedY] = rotateRegionCoordinates(xUm, yUm, orientation);
   if (region.pattern === "straight") return periodicDistance(orientedY, pitchUm);
   if (region.pattern === "wave") {
     const displacedY = orientedY - Math.sin(orientedX / pitchUm * Math.PI * 2) * pitchUm * 0.22;
@@ -692,6 +849,22 @@ function microtextureDistanceUm(xUm: number, yUm: number, region: RegionalTextur
     nearest = Math.min(nearest, periodicDistance(orientedX * directionX + orientedY * directionY, pitchUm));
   }
   return nearest;
+}
+
+function regionTextureOrientation(normalizedX: number, normalizedY: number, region: RegionalTextureRegion) {
+  const corridors = sampledRegionPaths(region).filter((path) => path.kind === "corridor");
+  if (!corridors.length) return region.textureAngle ?? 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  let tangentAngle = 0;
+  corridors.forEach((path) => {
+    const location = nearestSplineLocation(normalizedX, normalizedY, path);
+    if (location.distance >= nearestDistance) return;
+    nearestDistance = location.distance;
+    tangentAngle = location.angle;
+  });
+  // Rotate the procedural grid into the local tangent frame.  The authored angle
+  // is retained as a small design bias rather than overriding the surface path.
+  return -tangentAngle + (region.textureAngle ?? 0) * 0.22;
 }
 
 function rotateRegionCoordinates(x: number, y: number, angle: number) {
@@ -714,6 +887,68 @@ function segmentField(x: number, y: number, startX: number, startY: number, endX
   return 1 - distance / Math.max(taperedWidth, 0.01);
 }
 
+function pointInsideSplineOutline(pointX: number, pointY: number, path: SampledRegionPath) {
+  let inside = false;
+  for (let index = 0, previous = path.points.length - 1; index < path.points.length; previous = index++) {
+    const currentPoint = path.points[index];
+    const previousPoint = path.points[previous];
+    const crosses = (currentPoint.y > pointY) !== (previousPoint.y > pointY)
+      && pointX < (previousPoint.x - currentPoint.x) * (pointY - currentPoint.y)
+        / (previousPoint.y - currentPoint.y) + currentPoint.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function nearestSplineLocation(pointX: number, pointY: number, path: SampledRegionPath) {
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  let nearestWidth = path.widths[0] ?? 0;
+  let nearestProgress = 0;
+  let nearestAngle = 0;
+  const segmentCount = path.kind === "outline" ? path.points.length : path.points.length - 1;
+  for (let index = 0; index < segmentCount; index++) {
+    const start = path.points[index];
+    const end = path.points[(index + 1) % path.points.length];
+    const segmentX = end.x - start.x;
+    const segmentY = end.y - start.y;
+    const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
+    const mix = THREE.MathUtils.clamp(
+      ((pointX - start.x) * segmentX + (pointY - start.y) * segmentY) / Math.max(0.000001, segmentLengthSquared),
+      0,
+      1,
+    );
+    const distance = Math.hypot(pointX - THREE.MathUtils.lerp(start.x, end.x, mix), pointY - THREE.MathUtils.lerp(start.y, end.y, mix));
+    if (distance >= nearestDistance) continue;
+    nearestDistance = distance;
+    nearestWidth = THREE.MathUtils.lerp(path.widths[index] ?? 0, path.widths[(index + 1) % path.widths.length] ?? path.widths[index] ?? 0, mix);
+    const segmentLength = Math.sqrt(segmentLengthSquared);
+    nearestProgress = (path.cumulative[index] + segmentLength * mix) / Math.max(0.0001, path.totalLength);
+    nearestAngle = Math.atan2(segmentY, segmentX);
+  }
+  return { distance: nearestDistance, width: nearestWidth, progress: nearestProgress, angle: nearestAngle };
+}
+
+function splineRegionScore(normalizedX: number, normalizedY: number, region: RegionalTextureRegion) {
+  const paths = sampledRegionPaths(region);
+  if (!paths.length) return null;
+  const edgeSoftness = region.surfaceShape?.edgeSoftness ?? 0.018;
+  let field = -1;
+  paths.forEach((path) => {
+    const nearest = nearestSplineLocation(normalizedX, normalizedY, path);
+    if (path.kind === "outline") {
+      const inside = pointInsideSplineOutline(normalizedX, normalizedY, path);
+      const outlineField = inside
+        ? 0.26 + Math.min(0.72, nearest.distance / Math.max(edgeSoftness * 2.3, 0.02) * 0.72)
+        : -nearest.distance / Math.max(edgeSoftness, 0.01);
+      field = Math.max(field, outlineField);
+      return;
+    }
+    const corridorField = 1 - nearest.distance / Math.max(nearest.width, 0.025);
+    field = Math.max(field, corridorField);
+  });
+  return field;
+}
+
 function regionSuitabilityScore(
   normalizedX: number,
   normalizedY: number,
@@ -722,12 +957,20 @@ function regionSuitabilityScore(
   region: RegionalTextureRegion,
   regionIndex: number,
 ) {
-  const localX = (normalizedX - region.center[0]) / Math.max(region.radius[0], 0.001);
-  const localY = (normalizedY - region.center[1]) / Math.max(region.radius[1], 0.001);
+  const splineField = splineRegionScore(normalizedX, normalizedY, region);
+  if (splineField !== null) {
+    // The boundary is entirely authored by anatomical splines.  Surface terms are
+    // deliberately low-frequency so the outline stays controlled rather than noisy.
+    const surfaceAffinity = Math.abs(surfaceNormal.x) * 0.025
+      + Math.abs(surfaceNormal.y) * 0.018
+      + (normalizedZ - 0.5) * 0.018;
+    return splineField + surfaceAffinity;
+  }
+  const envelope = regionEnvelope(region);
+  const localX = (normalizedX - envelope.centerX) / Math.max(envelope.radiusX, 0.001);
+  const localY = (normalizedY - envelope.centerY) / Math.max(envelope.radiusY, 0.001);
   const [shapeX, shapeY] = rotateRegionCoordinates(localX, localY, region.orientation ?? 0);
   const surfaceRidge = Math.abs(surfaceNormal.x) * 0.46 + Math.abs(surfaceNormal.y) * 0.28 + normalizedZ * 0.16;
-  const anatomicalVariation = Math.sin(normalizedX * 31 + normalizedZ * 8.5) * 0.035
-    + Math.sin(normalizedY * 23 - normalizedX * 9) * 0.025;
   const layout = region.layout ?? (regionIndex === 0 ? "load-pair" : regionIndex === 1 ? "exchange-band" : "protect-crescent");
   let field = -1;
 
@@ -768,7 +1011,7 @@ function regionSuitabilityScore(
     field = Math.min(crescent, opening) + surfaceRidge * 0.035;
   }
 
-  return field + anatomicalVariation;
+  return field;
 }
 
 function assignedSurfaceRegion(
@@ -798,8 +1041,26 @@ function assignedSurfaceRegion(
 }
 
 function regionGrowthOrder(normalizedX: number, normalizedY: number, region: RegionalTextureRegion, regionIndex: number) {
-  const localX = (normalizedX - region.center[0]) / Math.max(region.radius[0], 0.001);
-  const localY = (normalizedY - region.center[1]) / Math.max(region.radius[1], 0.001);
+  const splinePaths = sampledRegionPaths(region);
+  if (splinePaths.length) {
+    let growthOrder = 1;
+    splinePaths.forEach((path, pathIndex) => {
+      const nearest = nearestSplineLocation(normalizedX, normalizedY, path);
+      const localOrder = path.kind === "corridor"
+        ? nearest.progress * 0.82 + Math.min(0.14, nearest.distance / Math.max(nearest.width, 0.025) * 0.14)
+        : THREE.MathUtils.clamp(
+          Math.hypot(normalizedX - path.centroid.x, normalizedY - path.centroid.y)
+            / Math.max(0.08, Math.sqrt(Math.abs(path.totalLength)) * 0.34),
+          0,
+          1,
+        ) * 0.78;
+      growthOrder = Math.min(growthOrder, localOrder + pathIndex * 0.13);
+    });
+    return THREE.MathUtils.clamp(growthOrder, 0, 1);
+  }
+  const envelope = regionEnvelope(region);
+  const localX = (normalizedX - envelope.centerX) / Math.max(envelope.radiusX, 0.001);
+  const localY = (normalizedY - envelope.centerY) / Math.max(envelope.radiusY, 0.001);
   const [shapeX, shapeY] = rotateRegionCoordinates(localX, localY, region.orientation ?? 0);
   const layout = region.layout ?? (regionIndex === 0 ? "load-pair" : regionIndex === 1 ? "exchange-band" : "protect-crescent");
   if (layout === "load-pair") {
@@ -821,6 +1082,11 @@ function regionGrowthOrder(normalizedX: number, normalizedY: number, region: Reg
 }
 
 function regionCarveProgress(region: RegionalTextureRegion, stageProgress: number, enabledOrder: number) {
+  if (region.anatomicalZone) {
+    const zoneIndex = Math.max(0, anatomicalZoneOrder.indexOf(region.anatomicalZone));
+    const delay = 0.16 + zoneIndex * 0.035 + Math.max(0, enabledOrder) * 0.035;
+    return ease(THREE.MathUtils.clamp((stageProgress - delay) / 0.58, 0, 1));
+  }
   const layout = region.layout ?? "load-pair";
   const layoutDelay = layout === "load-pair" || layout === "load-cluster" ? 0.03
     : layout === "ridge-bridge" ? 0.12
@@ -920,25 +1186,25 @@ function createSurfacePatchMaterial(color: number) {
   });
 }
 
-function createSurfacePatchRig(
+function createProjectedSurfacePatchRig(
   surface: SurfaceProjectionIndex,
   regions: RegionalTextureRegion[],
   modelUnitsPerUm: number,
 ): SurfacePatchRig {
   const group = new THREE.Group();
   group.name = "regional-surface-patch-geometry";
-  const colors = [0x73d2bd, 0xff8064, 0x9ea7ff];
   const patches: SurfacePatch[] = [];
   const projectedPosition = new THREE.Vector3();
   const projectedNormal = new THREE.Vector3();
 
   regions.forEach((region, regionIndex) => {
-    const radiusX = region.radius[0] * 1.12;
-    const radiusY = region.radius[1] * 1.12;
-    const minNormalizedX = region.center[0] - radiusX;
-    const maxNormalizedX = region.center[0] + radiusX;
-    const minNormalizedY = region.center[1] - radiusY;
-    const maxNormalizedY = region.center[1] + radiusY;
+    const envelope = regionEnvelope(region);
+    const radiusX = envelope.radiusX * 1.12;
+    const radiusY = envelope.radiusY * 1.12;
+    const minNormalizedX = THREE.MathUtils.clamp(envelope.centerX - radiusX, 0, 1);
+    const maxNormalizedX = THREE.MathUtils.clamp(envelope.centerX + radiusX, 0, 1);
+    const minNormalizedY = THREE.MathUtils.clamp(envelope.centerY - radiusY, 0, 1);
+    const maxNormalizedY = THREE.MathUtils.clamp(envelope.centerY + radiusY, 0, 1);
     const physicalWidthUm = (maxNormalizedX - minNormalizedX) * surface.size.x / modelUnitsPerUm;
     const physicalHeightUm = (maxNormalizedY - minNormalizedY) * surface.size.y / modelUnitsPerUm;
     const targetSpacingUm = Math.max(16, Math.min(24, (region.widthUm || 38) * 0.52));
@@ -972,7 +1238,8 @@ function createSurfacePatchRig(
         valid[index] = 1;
         const xUm = (normalizedX - minNormalizedX) * surface.size.x / modelUnitsPerUm;
         const yUm = (normalizedY - minNormalizedY) * surface.size.y / modelUnitsPerUm;
-        const distanceUm = region.enabled ? microtextureDistanceUm(xUm, yUm, region) : Number.POSITIVE_INFINITY;
+        const localOrientation = regionTextureOrientation(normalizedX, normalizedY, region);
+        const distanceUm = region.enabled ? microtextureDistanceUm(xUm, yUm, region, localOrientation) : Number.POSITIVE_INFINITY;
         const halfWidth = widthUm * 0.5;
         const grooveProfile = distanceUm < halfWidth ? 0.5 + 0.5 * Math.cos(Math.PI * distanceUm / halfWidth) : 0;
         projectedPosition.addScaledVector(projectedNormal, surfaceLift);
@@ -1012,7 +1279,7 @@ function createSurfacePatchRig(
     geometry.setAttribute("aRegionConfidence", new THREE.BufferAttribute(regionConfidences, 1));
     geometry.setIndex(indices);
     geometry.computeBoundingSphere();
-    const material = createSurfacePatchMaterial(region.enabled ? colors[regionIndex] : 0x9ba7a2);
+    const material = createSurfacePatchMaterial(microtextureColorNumber(region));
     const mesh = new THREE.Mesh(geometry, material);
     mesh.renderOrder = 5 + regionIndex;
     mesh.frustumCulled = false;
@@ -1021,6 +1288,267 @@ function createSurfacePatchRig(
   });
   group.visible = false;
   return { group, patches };
+}
+
+const anatomicalZoneOrder: AnatomicalCrownZone[] = ["occlusal", "buccal", "lingual", "mesial", "distal"];
+
+function classifyCrownTriangle(
+  x: number,
+  y: number,
+  z: number,
+  normalY: number,
+  bounds: THREE.Box3,
+  size: THREE.Vector3,
+) {
+  const normalizedY = (y - bounds.min.y) / Math.max(size.y, 0.001);
+  const radialX = (x - (bounds.min.x + bounds.max.x) * 0.5) / Math.max(size.x * 0.5, 0.001);
+  const radialZ = (z - (bounds.min.z + bounds.max.z) * 0.5) / Math.max(size.z * 0.5, 0.001);
+  const azimuth = Math.atan2(radialZ, radialX);
+  const radial = Math.hypot(radialX, radialZ);
+  // A softly undulating shoulder line follows the crown rather than cutting it
+  // with a flat plane.  It is deterministic and identical across all schemes.
+  const occlusalBoundary = 0.675
+    + Math.cos(azimuth * 2) * 0.024
+    - Math.sin(azimuth * 3) * 0.012
+    + THREE.MathUtils.clamp(radial - 0.72, 0, 0.35) * 0.055;
+  const capAffinity = normalizedY - occlusalBoundary + Math.max(0, normalY) * 0.045;
+  if (capAffinity >= 0) {
+    return {
+      zone: "occlusal" as const,
+      confidence: THREE.MathUtils.clamp(Math.abs(capAffinity) / 0.075, 0, 1),
+      growth: THREE.MathUtils.clamp(0.08 + radial * 0.62 + (1 - normalizedY) * 0.12, 0, 1),
+    };
+  }
+  // Keep the fitting underside ceramic.  The visible axial wall remains one
+  // continuous ring from the shoulder to the cervical margin.
+  if (normalizedY < 0.055 || (normalizedY < 0.14 && normalY < -0.46)) return null;
+  const horizontalDominance = Math.abs(radialX);
+  const depthDominance = Math.abs(radialZ);
+  let zone: AnatomicalCrownZone;
+  if (depthDominance >= horizontalDominance) zone = radialZ >= 0 ? "buccal" : "lingual";
+  else zone = radialX < 0 ? "mesial" : "distal";
+  const sectorSeparation = Math.abs(depthDominance - horizontalDominance) / Math.max(0.12, depthDominance + horizontalDominance);
+  const shoulderSeparation = Math.abs(capAffinity) / 0.085;
+  return {
+    zone,
+    confidence: THREE.MathUtils.clamp(Math.min(1, sectorSeparation * 1.8, shoulderSeparation), 0, 1),
+    growth: THREE.MathUtils.clamp(0.08 + (1 - normalizedY) * 0.74 + sectorSeparation * 0.08, 0, 1),
+  };
+}
+
+type AnatomicalProjectionConfig = {
+  plane: "xy" | "xz" | "zy";
+  horizontalAxis: "x" | "z";
+  verticalAxis: "y" | "z";
+  depthAxis: "x" | "y" | "z";
+  positiveDepth: boolean;
+  reverseWinding: boolean;
+};
+
+function anatomicalProjectionConfig(zone: AnatomicalCrownZone): AnatomicalProjectionConfig {
+  if (zone === "occlusal") return { plane: "xz", horizontalAxis: "x", verticalAxis: "z", depthAxis: "y", positiveDepth: true, reverseWinding: true };
+  if (zone === "buccal") return { plane: "xy", horizontalAxis: "x", verticalAxis: "y", depthAxis: "z", positiveDepth: true, reverseWinding: false };
+  if (zone === "lingual") return { plane: "xy", horizontalAxis: "x", verticalAxis: "y", depthAxis: "z", positiveDepth: false, reverseWinding: true };
+  if (zone === "mesial") return { plane: "zy", horizontalAxis: "z", verticalAxis: "y", depthAxis: "x", positiveDepth: false, reverseWinding: false };
+  return { plane: "zy", horizontalAxis: "z", verticalAxis: "y", depthAxis: "x", positiveDepth: true, reverseWinding: true };
+}
+
+function surfaceAxisValue(attribute: THREE.BufferAttribute, axis: "x" | "y" | "z", index: number) {
+  return axis === "x" ? attribute.getX(index) : axis === "y" ? attribute.getY(index) : attribute.getZ(index);
+}
+
+function surfaceAxisBounds(bounds: THREE.Box3, size: THREE.Vector3, axis: "x" | "y" | "z") {
+  if (axis === "x") return { minimum: bounds.min.x, span: size.x };
+  if (axis === "y") return { minimum: bounds.min.y, span: size.y };
+  return { minimum: bounds.min.z, span: size.z };
+}
+
+function projectAnatomicalSurfacePoint(
+  zone: AnatomicalCrownZone,
+  normalizedU: number,
+  normalizedV: number,
+  surface: SurfaceProjectionIndex,
+  targetPosition: THREE.Vector3,
+  targetNormal: THREE.Vector3,
+) {
+  const config = anatomicalProjectionConfig(zone);
+  const column = THREE.MathUtils.clamp(Math.floor(normalizedU * surface.divisions), 0, surface.divisions - 1);
+  const row = THREE.MathUtils.clamp(Math.floor(normalizedV * surface.divisions), 0, surface.divisions - 1);
+  const candidates = surface.axisBins[config.plane][row * surface.divisions + column];
+  const horizontalBounds = surfaceAxisBounds(surface.bounds, surface.size, config.horizontalAxis);
+  const verticalBounds = surfaceAxisBounds(surface.bounds, surface.size, config.verticalAxis);
+  const localU = THREE.MathUtils.lerp(horizontalBounds.minimum, horizontalBounds.minimum + horizontalBounds.span, normalizedU);
+  const localV = THREE.MathUtils.lerp(verticalBounds.minimum, verticalBounds.minimum + verticalBounds.span, normalizedV);
+  let selectedDepth = config.positiveDepth ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+  let selectedTriangle = -1;
+  let selectedA = 0;
+  let selectedB = 0;
+  let selectedClassification: ReturnType<typeof classifyCrownTriangle> = null;
+
+  for (const triangle of candidates) {
+    const aU = surfaceAxisValue(surface.position, config.horizontalAxis, triangle);
+    const aV = surfaceAxisValue(surface.position, config.verticalAxis, triangle);
+    const bU = surfaceAxisValue(surface.position, config.horizontalAxis, triangle + 1);
+    const bV = surfaceAxisValue(surface.position, config.verticalAxis, triangle + 1);
+    const cU = surfaceAxisValue(surface.position, config.horizontalAxis, triangle + 2);
+    const cV = surfaceAxisValue(surface.position, config.verticalAxis, triangle + 2);
+    const denominator = (bV - cV) * (aU - cU) + (cU - bU) * (aV - cV);
+    if (Math.abs(denominator) < 1e-8) continue;
+    const weightA = ((bV - cV) * (localU - cU) + (cU - bU) * (localV - cV)) / denominator;
+    const weightB = ((cV - aV) * (localU - cU) + (aU - cU) * (localV - cV)) / denominator;
+    const weightC = 1 - weightA - weightB;
+    if (weightA < -0.0005 || weightB < -0.0005 || weightC < -0.0005) continue;
+    const depth = weightA * surfaceAxisValue(surface.position, config.depthAxis, triangle)
+      + weightB * surfaceAxisValue(surface.position, config.depthAxis, triangle + 1)
+      + weightC * surfaceAxisValue(surface.position, config.depthAxis, triangle + 2);
+    const winsDepth = config.positiveDepth ? depth > selectedDepth : depth < selectedDepth;
+    if (!winsDepth) continue;
+    const x = weightA * surface.position.getX(triangle) + weightB * surface.position.getX(triangle + 1) + weightC * surface.position.getX(triangle + 2);
+    const y = weightA * surface.position.getY(triangle) + weightB * surface.position.getY(triangle + 1) + weightC * surface.position.getY(triangle + 2);
+    const z = weightA * surface.position.getZ(triangle) + weightB * surface.position.getZ(triangle + 1) + weightC * surface.position.getZ(triangle + 2);
+    const normalY = weightA * surface.normal.getY(triangle) + weightB * surface.normal.getY(triangle + 1) + weightC * surface.normal.getY(triangle + 2);
+    const classification = classifyCrownTriangle(x, y, z, normalY, surface.bounds, surface.size);
+    if (!classification || classification.zone !== zone) continue;
+    selectedDepth = depth;
+    selectedTriangle = triangle;
+    selectedA = weightA;
+    selectedB = weightB;
+    selectedClassification = classification;
+  }
+
+  if (selectedTriangle < 0 || !selectedClassification) return null;
+  const selectedC = 1 - selectedA - selectedB;
+  targetPosition.set(
+    selectedA * surface.position.getX(selectedTriangle) + selectedB * surface.position.getX(selectedTriangle + 1) + selectedC * surface.position.getX(selectedTriangle + 2),
+    selectedA * surface.position.getY(selectedTriangle) + selectedB * surface.position.getY(selectedTriangle + 1) + selectedC * surface.position.getY(selectedTriangle + 2),
+    selectedA * surface.position.getZ(selectedTriangle) + selectedB * surface.position.getZ(selectedTriangle + 1) + selectedC * surface.position.getZ(selectedTriangle + 2),
+  );
+  targetNormal.set(
+    selectedA * surface.normal.getX(selectedTriangle) + selectedB * surface.normal.getX(selectedTriangle + 1) + selectedC * surface.normal.getX(selectedTriangle + 2),
+    selectedA * surface.normal.getY(selectedTriangle) + selectedB * surface.normal.getY(selectedTriangle + 1) + selectedC * surface.normal.getY(selectedTriangle + 2),
+    selectedA * surface.normal.getZ(selectedTriangle) + selectedB * surface.normal.getZ(selectedTriangle + 1) + selectedC * surface.normal.getZ(selectedTriangle + 2),
+  ).normalize();
+  const outwardComponent = config.depthAxis === "x" ? targetNormal.x : config.depthAxis === "y" ? targetNormal.y : targetNormal.z;
+  if ((config.positiveDepth ? 1 : -1) * outwardComponent < 0) targetNormal.negate();
+  return selectedClassification;
+}
+
+function createAnatomicalSurfacePatchRig(
+  surface: SurfaceProjectionIndex,
+  regions: RegionalTextureRegion[],
+  modelUnitsPerUm: number,
+): SurfacePatchRig {
+  const group = new THREE.Group();
+  group.name = "five-zone-anatomical-crown-atlas";
+  const patches: SurfacePatch[] = [];
+  const regionByZone = new Map(regions.map((region, index) => [region.anatomicalZone, { region, index }]));
+  const projectedPosition = new THREE.Vector3();
+  const projectedNormal = new THREE.Vector3();
+
+  anatomicalZoneOrder.forEach((zone, zoneIndex) => {
+    const zonePlan = regionByZone.get(zone);
+    if (!zonePlan) return;
+    const { region, index: regionIndex } = zonePlan;
+    const material = createSurfacePatchMaterial(microtextureColorNumber(region));
+    if (!region.enabled) {
+      const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
+      mesh.name = `anatomical-zone-${zone}`;
+      group.add(mesh);
+      patches.push({ regionId: region.id, regionIndex, enabled: false, mesh, material });
+      return;
+    }
+    const projection = anatomicalProjectionConfig(zone);
+    const horizontalSpan = surfaceAxisBounds(surface.bounds, surface.size, projection.horizontalAxis).span;
+    const verticalSpan = surfaceAxisBounds(surface.bounds, surface.size, projection.verticalAxis).span;
+    const targetSpacingUm = Math.max(16, Math.min(24, (region.widthUm || 38) * 0.52));
+    const columns = THREE.MathUtils.clamp(Math.ceil(horizontalSpan / modelUnitsPerUm / targetSpacingUm), 120, 280);
+    const rows = THREE.MathUtils.clamp(Math.ceil(verticalSpan / modelUnitsPerUm / targetSpacingUm), 100, 240);
+    const vertexCount = (columns + 1) * (rows + 1);
+    const positions = new Float32Array(vertexCount * 3);
+    const normals = new Float32Array(vertexCount * 3);
+    const grooveDepths = new Float32Array(vertexCount);
+    const grooveProfiles = new Float32Array(vertexCount);
+    const revealOrders = new Float32Array(vertexCount);
+    const flowCoordinates = new Float32Array(vertexCount);
+    const regionConfidences = new Float32Array(vertexCount);
+    const valid = new Uint8Array(vertexCount);
+    const depthModelUnits = (region.enabled ? region.depthUm ?? 19 : 0) * modelUnitsPerUm;
+    const surfaceLift = Math.max(modelUnitsPerUm * 3, depthModelUnits * 1.04);
+    const halfWidthUm = Math.max(1, region.widthUm ?? 38) * 0.5;
+    const pitchUm = Math.max(60, region.pitchUm ?? 160);
+
+    for (let row = 0; row <= rows; row++) {
+      const normalizedV = row / rows;
+      for (let column = 0; column <= columns; column++) {
+        const normalizedU = column / columns;
+        const index = row * (columns + 1) + column;
+        const classification = projectAnatomicalSurfacePoint(zone, normalizedU, normalizedV, surface, projectedPosition, projectedNormal);
+        if (!classification) continue;
+        valid[index] = 1;
+        const uUm = normalizedU * horizontalSpan / modelUnitsPerUm;
+        const vUm = normalizedV * verticalSpan / modelUnitsPerUm;
+        const distanceUm = microtextureDistanceUm(uUm, vUm, region);
+        const grooveProfile = distanceUm < halfWidthUm ? 0.5 + 0.5 * Math.cos(Math.PI * distanceUm / halfWidthUm) : 0;
+        projectedPosition.addScaledVector(projectedNormal, surfaceLift);
+        positions[index * 3] = projectedPosition.x;
+        positions[index * 3 + 1] = projectedPosition.y;
+        positions[index * 3 + 2] = projectedPosition.z;
+        normals[index * 3] = projectedNormal.x;
+        normals[index * 3 + 1] = projectedNormal.y;
+        normals[index * 3 + 2] = projectedNormal.z;
+        grooveProfiles[index] = grooveProfile;
+        grooveDepths[index] = depthModelUnits * grooveProfile;
+        revealOrders[index] = THREE.MathUtils.clamp(classification.growth + zoneIndex * 0.035, 0, 1);
+        flowCoordinates[index] = (uUm + vUm * 0.36) / pitchUm;
+        regionConfidences[index] = classification.confidence;
+      }
+    }
+
+    const indices: number[] = [];
+    for (let row = 0; row < rows; row++) {
+      for (let column = 0; column < columns; column++) {
+        const topLeft = row * (columns + 1) + column;
+        const topRight = topLeft + 1;
+        const bottomLeft = topLeft + columns + 1;
+        const bottomRight = bottomLeft + 1;
+        if (!valid[topLeft] || !valid[topRight] || !valid[bottomLeft] || !valid[bottomRight]) continue;
+        if (projection.reverseWinding) {
+          indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+        } else {
+          indices.push(topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft);
+        }
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute("aGrooveDepth", new THREE.BufferAttribute(grooveDepths, 1));
+    geometry.setAttribute("aGrooveProfile", new THREE.BufferAttribute(grooveProfiles, 1));
+    geometry.setAttribute("aRevealOrder", new THREE.BufferAttribute(revealOrders, 1));
+    geometry.setAttribute("aFlowCoordinate", new THREE.BufferAttribute(flowCoordinates, 1));
+    geometry.setAttribute("aRegionConfidence", new THREE.BufferAttribute(regionConfidences, 1));
+    geometry.setIndex(indices);
+    geometry.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = `anatomical-zone-${zone}`;
+    mesh.renderOrder = 5 + zoneIndex;
+    mesh.frustumCulled = false;
+    group.add(mesh);
+    patches.push({ regionId: region.id, regionIndex, enabled: region.enabled, mesh, material });
+  });
+  group.visible = false;
+  return { group, patches };
+}
+
+function createSurfacePatchRig(
+  surface: SurfaceProjectionIndex,
+  regions: RegionalTextureRegion[],
+  modelUnitsPerUm: number,
+) {
+  return regions.some((region) => region.anatomicalZone)
+    ? createAnatomicalSurfacePatchRig(surface, regions, modelUnitsPerUm)
+    : createProjectedSurfacePatchRig(surface, regions, modelUnitsPerUm);
 }
 
 function createPointCloud(source: THREE.BufferGeometry) {
@@ -1817,6 +2345,9 @@ function createFusionLayerMaterial(weights: THREE.Vector3, color: number) {
       uProgress: { value: 0 },
       uSeparation: { value: 0 },
       uTime: { value: 0 },
+      uAlign: { value: 0 },
+      uConflict: { value: 0 },
+      uConverge: { value: 0 },
     },
     vertexShader: `
       attribute float aStress;
@@ -1825,6 +2356,7 @@ function createFusionLayerMaterial(weights: THREE.Vector3, color: number) {
       attribute float aFieldOrder;
       uniform vec3 uWeights;
       uniform float uSeparation;
+      uniform float uAlign;
       varying float vValue;
       varying float vOrder;
       varying vec3 vNormal;
@@ -1832,7 +2364,8 @@ function createFusionLayerMaterial(weights: THREE.Vector3, color: number) {
         vValue = dot(vec3(aStress, aFluid, aBio), uWeights);
         vOrder = aFieldOrder;
         vNormal = normalize(normalMatrix * normal);
-        vec3 displaced = position + normal * uSeparation;
+        float surfaceBreath = sin(aFieldOrder * 19.0) * 0.004 * uAlign;
+        vec3 displaced = position + normal * (uSeparation + surfaceBreath);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
       }
     `,
@@ -1841,17 +2374,22 @@ function createFusionLayerMaterial(weights: THREE.Vector3, color: number) {
       uniform float uOpacity;
       uniform float uProgress;
       uniform float uTime;
+      uniform float uConflict;
+      uniform float uConverge;
       varying float vValue;
       varying float vOrder;
       varying vec3 vNormal;
       void main() {
         float reveal = smoothstep(vOrder - 0.13, vOrder + 0.04, uProgress);
-        float contour = 1.0 - smoothstep(0.045, 0.12, abs(fract(vValue * 8.0 - uTime * 0.018) - 0.5));
+        float contour = 1.0 - smoothstep(0.035, 0.105, abs(fract(vValue * 10.0 - uTime * 0.026) - 0.5));
         float fresnel = pow(1.0 - abs(vNormal.z), 2.2);
         float intensity = smoothstep(0.24, 0.9, vValue);
+        float interference = pow(0.5 + 0.5 * sin(vValue * 44.0 + vOrder * 31.0 - uTime * 3.4), 3.0) * uConflict;
         if (reveal * intensity < 0.008) discard;
         vec3 color = uColor * (0.72 + intensity * 0.45) + contour * vec3(0.35, 0.48, 0.45);
-        float alpha = reveal * intensity * (0.09 + contour * 0.16 + fresnel * 0.08) * uOpacity;
+        color += interference * vec3(1.0, 0.72, 0.44) * 0.62;
+        color = mix(color, vec3(0.72, 1.0, 0.92), uConverge * contour * 0.34);
+        float alpha = reveal * intensity * (0.075 + contour * 0.17 + fresnel * 0.07 + interference * 0.16) * uOpacity;
         gl_FragColor = vec4(color, alpha);
       }
     `,
@@ -1862,21 +2400,284 @@ function createFusionLayerMaterial(weights: THREE.Vector3, color: number) {
   });
 }
 
-function createFusionLayerRig(source: THREE.BufferGeometry): FusionLayerRig {
+function createFusionConstraintMaterial(color: number) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(color) },
+      uOpacity: { value: 0 },
+      uSeparation: { value: 0.1 },
+      uAlign: { value: 0 },
+      uTime: { value: 0 },
+    },
+    vertexShader: `
+      attribute vec3 aSurfaceNormal;
+      attribute float aEndpoint;
+      attribute float aOrder;
+      uniform float uSeparation;
+      uniform float uAlign;
+      varying float vEndpoint;
+      varying float vOrder;
+      void main() {
+        vEndpoint = aEndpoint;
+        vOrder = aOrder;
+        float tether = uSeparation * aEndpoint * (1.0 - uAlign * 0.16);
+        vec3 displaced = position + aSurfaceNormal * tether;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      uniform float uAlign;
+      uniform float uTime;
+      varying float vEndpoint;
+      varying float vOrder;
+      void main() {
+        float directionalPulse = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(vEndpoint * 8.0 - uTime * 5.2 + vOrder * 11.0), 4.0);
+        vec3 color = mix(uColor * 0.62, vec3(0.83, 1.0, 0.95), vEndpoint * uAlign);
+        gl_FragColor = vec4(color, uOpacity * (0.22 + directionalPulse * 0.62));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+function createFusionConstraintGeometry(source: THREE.BufferGeometry, attributeName: string, density: number) {
+  const position = source.getAttribute("position") as THREE.BufferAttribute;
+  const normal = source.getAttribute("normal") as THREE.BufferAttribute;
+  const value = source.getAttribute(attributeName) as THREE.BufferAttribute;
+  const order = source.getAttribute("aFieldOrder") as THREE.BufferAttribute;
+  const stride = Math.max(1, Math.floor(position.count / Math.max(80, 280 * density)));
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const endpoints: number[] = [];
+  const orders: number[] = [];
+  for (let index = 0; index < position.count; index += stride) {
+    if (value.getX(index) < 0.5 || normal.getZ(index) < 0.08) continue;
+    const point = [position.getX(index), position.getY(index), position.getZ(index)];
+    const direction = [normal.getX(index), normal.getY(index), normal.getZ(index)];
+    positions.push(...point, ...point);
+    normals.push(...direction, ...direction);
+    endpoints.push(0, 1);
+    orders.push(order.getX(index), order.getX(index));
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("aSurfaceNormal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute("aEndpoint", new THREE.Float32BufferAttribute(endpoints, 1));
+  geometry.setAttribute("aOrder", new THREE.Float32BufferAttribute(orders, 1));
+  return geometry;
+}
+
+function createIsoContourGeometry(source: THREE.BufferGeometry, attributeName: string, levels: number[], density: number) {
+  const position = source.getAttribute("position") as THREE.BufferAttribute;
+  const normal = source.getAttribute("normal") as THREE.BufferAttribute;
+  const scalar = source.getAttribute(attributeName) as THREE.BufferAttribute;
+  const positions: number[] = [];
+  const triangleStride = Math.max(1, Math.round(1 / Math.max(0.2, density)));
+  const interpolateEdge = (start: number, end: number, level: number) => {
+    const startValue = scalar.getX(start);
+    const endValue = scalar.getX(end);
+    if ((startValue - level) * (endValue - level) > 0 || Math.abs(endValue - startValue) < 0.00001) return null;
+    const mix = THREE.MathUtils.clamp((level - startValue) / (endValue - startValue), 0, 1);
+    const normalX = THREE.MathUtils.lerp(normal.getX(start), normal.getX(end), mix);
+    const normalY = THREE.MathUtils.lerp(normal.getY(start), normal.getY(end), mix);
+    const normalZ = THREE.MathUtils.lerp(normal.getZ(start), normal.getZ(end), mix);
+    const inverseLength = 1 / Math.max(0.0001, Math.hypot(normalX, normalY, normalZ));
+    const lift = 0.014;
+    return new THREE.Vector3(
+      THREE.MathUtils.lerp(position.getX(start), position.getX(end), mix) + normalX * inverseLength * lift,
+      THREE.MathUtils.lerp(position.getY(start), position.getY(end), mix) + normalY * inverseLength * lift,
+      THREE.MathUtils.lerp(position.getZ(start), position.getZ(end), mix) + normalZ * inverseLength * lift,
+    );
+  };
+  for (let triangle = 0; triangle < position.count; triangle += 3 * triangleStride) {
+    for (const level of levels) {
+      const intersections = [
+        interpolateEdge(triangle, triangle + 1, level),
+        interpolateEdge(triangle + 1, triangle + 2, level),
+        interpolateEdge(triangle + 2, triangle, level),
+      ].filter((point): point is THREE.Vector3 => Boolean(point));
+      if (intersections.length < 2) continue;
+      positions.push(...intersections[0].toArray(), ...intersections[1].toArray());
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setDrawRange(0, 0);
+  return geometry;
+}
+
+function createFusionConflictGeometry(source: THREE.BufferGeometry, density: number) {
+  const position = source.getAttribute("position") as THREE.BufferAttribute;
+  const normal = source.getAttribute("normal") as THREE.BufferAttribute;
+  const stress = source.getAttribute("aStress") as THREE.BufferAttribute;
+  const fluid = source.getAttribute("aFluid") as THREE.BufferAttribute;
+  const bio = source.getAttribute("aBio") as THREE.BufferAttribute;
+  const order = source.getAttribute("aFieldOrder") as THREE.BufferAttribute;
+  const stride = Math.max(1, Math.floor(position.count / Math.max(110, 520 * density)));
+  const positions: number[] = [];
+  const conflicts: number[] = [];
+  const orders: number[] = [];
+  for (let index = 0; index < position.count; index += stride) {
+    const values = [stress.getX(index), fluid.getX(index), bio.getX(index)].sort((a, b) => b - a);
+    const conflict = THREE.MathUtils.clamp((values[1] - 0.32) * 1.8, 0, 1)
+      * THREE.MathUtils.clamp(1 - (values[0] - values[1]) / 0.28, 0, 1);
+    if (conflict < 0.18 || normal.getZ(index) < 0.04) continue;
+    positions.push(
+      position.getX(index) + normal.getX(index) * 0.022,
+      position.getY(index) + normal.getY(index) * 0.022,
+      position.getZ(index) + normal.getZ(index) * 0.022,
+    );
+    conflicts.push(conflict);
+    orders.push(order.getX(index));
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("aConflict", new THREE.Float32BufferAttribute(conflicts, 1));
+  geometry.setAttribute("aOrder", new THREE.Float32BufferAttribute(orders, 1));
+  return geometry;
+}
+
+function createFusionConflictMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uOpacity: { value: 0 },
+      uProgress: { value: 0 },
+      uTime: { value: 0 },
+    },
+    vertexShader: `
+      attribute float aConflict;
+      attribute float aOrder;
+      uniform float uProgress;
+      uniform float uTime;
+      varying float vConflict;
+      void main() {
+        float reveal = smoothstep(aOrder - 0.2, aOrder + 0.08, uProgress);
+        float pulse = 0.78 + sin(uTime * 4.8 + aOrder * 23.0) * 0.22;
+        vConflict = aConflict * reveal;
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = (2.3 + aConflict * 5.2) * pulse * (5.8 / max(1.0, -viewPosition.z));
+        gl_Position = projectionMatrix * viewPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform float uOpacity;
+      varying float vConflict;
+      void main() {
+        float radius = length(gl_PointCoord - 0.5);
+        if (radius > 0.5 || vConflict < 0.01) discard;
+        float ring = smoothstep(0.48, 0.24, radius) - smoothstep(0.2, 0.06, radius);
+        float core = 1.0 - smoothstep(0.02, 0.19, radius);
+        vec3 color = mix(vec3(1.0, 0.46, 0.26), vec3(1.0, 0.91, 0.66), core);
+        gl_FragColor = vec4(color, (ring * 0.76 + core) * vConflict * uOpacity);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+function createFusionLayerRig(source: THREE.BufferGeometry, density = 1): FusionLayerRig {
   const group = new THREE.Group();
   group.name = "multiphysics-fusion-layers";
+  const colors = [0xff8062, 0x75dac9, 0xa982d1];
+  const attributes = ["aStress", "aFluid", "aBio"];
   const materials = [
-    createFusionLayerMaterial(new THREE.Vector3(1, 0, 0), 0xff8062),
-    createFusionLayerMaterial(new THREE.Vector3(0, 1, 0), 0x75dac9),
-    createFusionLayerMaterial(new THREE.Vector3(0, 0, 1), 0xa982d1),
+    createFusionLayerMaterial(new THREE.Vector3(1, 0, 0), colors[0]),
+    createFusionLayerMaterial(new THREE.Vector3(0, 1, 0), colors[1]),
+    createFusionLayerMaterial(new THREE.Vector3(0, 0, 1), colors[2]),
   ];
   materials.forEach((material, index) => {
     const mesh = new THREE.Mesh(source, material);
     mesh.renderOrder = 4 + index;
     group.add(mesh);
   });
+  const fieldContours = attributes.map((attributeName, index) => {
+    const material = new THREE.LineBasicMaterial({ color: colors[index], transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+    const line = new THREE.LineSegments(createIsoContourGeometry(source, attributeName, [0.46, 0.62, 0.78], density), material);
+    line.renderOrder = 8;
+    group.add(line);
+    return line;
+  });
+  const constraintLines = attributes.map((attributeName, index) => {
+    const line = new THREE.LineSegments(createFusionConstraintGeometry(source, attributeName, density), createFusionConstraintMaterial(colors[index]));
+    line.renderOrder = 9;
+    group.add(line);
+    return line;
+  });
+  const conflictPoints = new THREE.Points(createFusionConflictGeometry(source, density), createFusionConflictMaterial());
+  conflictPoints.renderOrder = 10;
+  group.add(conflictPoints);
+  const confidenceColors = [0xb9f6e7, 0xf0fffa];
+  const confidenceLines = [
+    new THREE.LineSegments(
+      createIsoContourGeometry(source, "aFusion", [0.5, 0.62, 0.74, 0.84], density),
+      new THREE.LineBasicMaterial({ color: confidenceColors[0], transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }),
+    ),
+    new THREE.LineSegments(
+      createIsoContourGeometry(source, "aFusion", [0.57, 0.69, 0.8], density * 0.82),
+      new THREE.LineBasicMaterial({ color: confidenceColors[1], transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }),
+    ),
+  ];
+  confidenceLines.forEach((line, index) => {
+    line.renderOrder = 11 + index;
+    group.add(line);
+  });
   group.visible = false;
-  return { group, materials };
+  return { group, materials, constraintLines, conflictPoints, fieldContours, confidenceLines };
+}
+
+function updateFusionLayerRig(
+  rig: FusionLayerRig,
+  progress: number,
+  elapsed: number,
+  opacity: number,
+  reducedMotion: boolean,
+) {
+  const separation = reducedMotion ? 1 : ease(THREE.MathUtils.clamp(progress / 0.18, 0, 1));
+  const alignment = reducedMotion ? 1 : ease(THREE.MathUtils.clamp((progress - 0.18) / 0.27, 0, 1));
+  const conflictIn = reducedMotion ? 0 : ease(THREE.MathUtils.clamp((progress - 0.39) / 0.13, 0, 1));
+  const conflictOut = reducedMotion ? 1 : ease(THREE.MathUtils.clamp((progress - 0.63) / 0.18, 0, 1));
+  const conflict = conflictIn * (1 - conflictOut);
+  const convergence = reducedMotion ? 1 : ease(THREE.MathUtils.clamp((progress - 0.68) / 0.32, 0, 1));
+  const separations = [0.13, 0.085, 0.045];
+  rig.group.visible = opacity > 0.008;
+  rig.materials.forEach((material, layerIndex) => {
+    const layerReveal = ease(THREE.MathUtils.clamp(progress * 1.2 - layerIndex * 0.075, 0, 1));
+    const currentSeparation = separations[layerIndex] * separation * (1 - convergence);
+    material.uniforms.uOpacity.value = opacity * layerReveal * (1 - convergence * 0.78);
+    material.uniforms.uProgress.value = layerReveal;
+    material.uniforms.uSeparation.value = currentSeparation;
+    material.uniforms.uTime.value = elapsed;
+    material.uniforms.uAlign.value = alignment;
+    material.uniforms.uConflict.value = conflict;
+    material.uniforms.uConverge.value = convergence;
+
+    const contour = rig.fieldContours[layerIndex];
+    const contourCount = contour.geometry.getAttribute("position").count;
+    const contourReveal = ease(THREE.MathUtils.clamp(separation * 1.14 - layerIndex * 0.08, 0, 1));
+    contour.geometry.setDrawRange(0, Math.floor(contourCount * contourReveal / 2) * 2);
+    contour.material.opacity = opacity * contourReveal * (0.42 + alignment * 0.2) * (1 - convergence * 0.72);
+
+    const constraint = rig.constraintLines[layerIndex];
+    constraint.material.uniforms.uOpacity.value = opacity * alignment * (0.34 + conflict * 0.46) * (1 - convergence * 0.72);
+    constraint.material.uniforms.uSeparation.value = currentSeparation;
+    constraint.material.uniforms.uAlign.value = alignment;
+    constraint.material.uniforms.uTime.value = elapsed;
+  });
+  rig.conflictPoints.material.uniforms.uOpacity.value = opacity * conflict;
+  rig.conflictPoints.material.uniforms.uProgress.value = alignment;
+  rig.conflictPoints.material.uniforms.uTime.value = elapsed;
+  rig.confidenceLines.forEach((line, index) => {
+    const lineProgress = ease(THREE.MathUtils.clamp(convergence * 1.24 - index * 0.16, 0, 1));
+    const count = line.geometry.getAttribute("position").count;
+    line.geometry.setDrawRange(0, Math.floor(count * lineProgress / 2) * 2);
+    line.material.opacity = opacity * lineProgress * (index ? 0.72 : 0.48);
+  });
 }
 
 function createSurfaceFlowParticleMaterial(pixelRatio: number) {
@@ -2014,7 +2815,9 @@ function createEnsembleSchemeRig(
     transparent: true,
     opacity: 0,
   });
-  group.add(new THREE.Mesh(source, baseMaterial));
+  const hitMesh = new THREE.Mesh(source, baseMaterial);
+  hitMesh.name = "scheme-surface-hit-target";
+  group.add(hitMesh);
   const patchRig = createSurfacePatchRig(surface, regions, modelUnitsPerUm);
   group.add(patchRig.group);
   const simulationMaterial = createSimulationFieldMaterial();
@@ -2042,6 +2845,8 @@ function createEnsembleSchemeRig(
   const bioRiskPoints = new THREE.Points(createBioRiskGeometry(source), bioRiskMaterial);
   bioRiskPoints.renderOrder = 7;
   group.add(bioRiskPoints);
+  const fusionRig = createFusionLayerRig(source, 0.42);
+  group.add(fusionRig.group);
   const particleCount = 440;
   const particleGeometry = new THREE.BufferGeometry();
   particleGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(particleCount * 3), 3));
@@ -2055,6 +2860,7 @@ function createEnsembleSchemeRig(
   group.visible = false;
   return {
     group,
+    hitMesh,
     regions,
     baseMaterial,
     patchRig,
@@ -2067,6 +2873,7 @@ function createEnsembleSchemeRig(
     bioNetworkRig,
     bioRiskMaterial,
     bioRiskPoints,
+    fusionRig,
     particles: { count: particleCount, geometry: particleGeometry, material: particleMaterial, points: particlePoints },
   };
 }
@@ -2081,6 +2888,7 @@ function updateEnsembleSchemeRig(
   elapsed: number,
   opacity: number,
   reducedMotion: boolean,
+  focusRegionId?: string,
 ) {
   rig.baseMaterial.opacity = opacity;
   const designReveal = phase === "generate"
@@ -2093,16 +2901,23 @@ function updateEnsembleSchemeRig(
     const carveProgress = phase === "generate" && enabledOrder >= 0
       ? regionCarveProgress(rig.regions[patch.regionIndex], stageProgress, enabledOrder)
       : patch.enabled ? 1 : 0;
-    patch.material.uniforms.uOpacity.value = opacity * (patch.enabled ? 0.96 : 0.2);
+    patch.material.uniforms.uOpacity.value = patch.enabled ? opacity * 0.98 : 0;
     patch.material.uniforms.uReveal.value = designReveal;
     patch.material.uniforms.uCarve.value = carveProgress;
     patch.material.uniforms.uTime.value = elapsed;
     patch.material.uniforms.uFlow.value = simulationField === "fluid" ? 1 : 0;
-    patch.material.uniforms.uFocus.value = 1;
+    patch.material.uniforms.uFocus.value = !focusRegionId || patch.regionId === focusRegionId ? 1 : 0.24;
     patch.material.uniforms.uDecision.value = phase === "generate" ? (1 - designReveal) * 0.45 : 0;
   });
 
   const isRecalculation = phase === "recalculate";
+  updateFusionLayerRig(
+    rig.fusionRig,
+    simulationField === "fusion" ? simulationProgress : 0,
+    elapsed,
+    simulationField === "fusion" ? opacity : 0,
+    reducedMotion,
+  );
   const fieldWeights = rig.simulationMaterial.uniforms.uWeights.value as THREE.Vector4;
   fieldWeights.set(
     simulationField === "mechanics" ? 1 : 0,
@@ -2252,6 +3067,14 @@ function visualTargets(mode: DentalSceneMode, phase: DentalScenePhase): VisualSt
   return { scan, heat, texture, flow, repair, defects };
 }
 
+function phaseShowsRegionalDesign(phase: DentalScenePhase) {
+  return phase === "segment"
+    || phase === "generate"
+    || phase === "recalculate"
+    || phase === "simulate"
+    || phase === "converge";
+}
+
 function phaseRotation(phase: DentalScenePhase) {
   switch (phase) {
     case "scan": return -0.18;
@@ -2337,6 +3160,14 @@ export function DentalScene({
     const projectedSchemeCenter = new THREE.Vector3();
     const lastSchemeLabelX = [Number.NaN, Number.NaN, Number.NaN];
     let ensembleCarouselAngle = 0;
+    const schemeUserYaw = [0, 0, 0];
+    const schemeYawVelocity = [0, 0, 0];
+    const schemeRaycaster = new THREE.Raycaster();
+    const schemePointer = new THREE.Vector2();
+    let draggedSchemeIndex = -1;
+    let dragPointerId = -1;
+    let dragLastClientX = 0;
+    let dragLastTimestamp = 0;
     let disposed = false;
     let frame = 0;
     let baseScale = 1;
@@ -2931,38 +3762,36 @@ export function DentalScene({
       enabledIndices: number[],
     ) => {
       patchBlend = reducedMotion ? 1 : THREE.MathUtils.damp(patchBlend, 1, 5.2, delta);
+      const regionalLayerAllowed = phaseShowsRegionalDesign(visual.phase);
       surfacePatchCache.forEach((rig, keyName) => {
         const planWeight = keyName === activePatchKey
           ? patchBlend
           : keyName === previousPatchKey
             ? 1 - patchBlend
             : 0;
-        const rigOpacity = regionalOpacity * planWeight;
+        const rigOpacity = regionalLayerAllowed ? regionalOpacity * planWeight : 0;
         rig.group.visible = rigOpacity > 0.008;
 
         rig.patches.forEach((patch) => {
           const enabledOrder = enabledIndices.indexOf(patch.regionIndex);
           const region = visual.regionalTextures[patch.regionIndex];
           const segmentReveal = ease(THREE.MathUtils.clamp(visual.stageProgress * 3.15 - patch.regionIndex * 0.68, 0, 1));
-          const fusionGrowth = visual.phase === "baseline" && visual.simulationField === "fusion";
           const reveal = visual.phase === "segment"
             ? segmentReveal
-            : fusionGrowth
-              ? ease(visual.simulationProgress)
-              : regionalOpacity > 0.01 ? 1 : 0;
+            : regionalLayerAllowed && regionalOpacity > 0.01 ? 1 : 0;
           const carve = visual.phase === "generate" && enabledOrder >= 0 && region
             ? regionCarveProgress(region, visual.stageProgress, enabledOrder)
             : visual.phase === "recalculate" || visual.phase === "simulate" || visual.phase === "converge" ? Number(patch.enabled) : 0;
           const focus = focusRegionIndex < 0 || patch.regionIndex === focusRegionIndex ? 1 : 0.28;
-          patch.material.uniforms.uOpacity.value = rigOpacity * (patch.enabled ? 1 : 0.2);
+          const undecidedOutline = visual.phase === "segment" ? 0.1 : 0;
+          patch.material.uniforms.uOpacity.value = rigOpacity * (patch.enabled ? 0.98 : undecidedOutline);
           patch.material.uniforms.uReveal.value = reveal;
           patch.material.uniforms.uCarve.value = patch.enabled ? carve : 0;
           patch.material.uniforms.uTime.value = elapsedTime;
           patch.material.uniforms.uFlow.value = state.flow;
           patch.material.uniforms.uFocus.value = focus;
-          const decisionProgress = fusionGrowth ? visual.simulationProgress : visual.stageProgress;
-          patch.material.uniforms.uDecision.value = (visual.phase === "segment" || fusionGrowth) && !reducedMotion
-            ? (1 - ease(decisionProgress)) * 0.52 + Math.sin(decisionProgress * Math.PI * 5) ** 2 * 0.48
+          patch.material.uniforms.uDecision.value = visual.phase === "segment" && !reducedMotion
+            ? (1 - ease(visual.stageProgress)) * 0.52 + Math.sin(visual.stageProgress * Math.PI * 5) ** 2 * 0.48
             : 0;
         });
       });
@@ -2977,6 +3806,16 @@ export function DentalScene({
       const visual = visualRef.current;
       const ensembleActive = ensembleRigs.length === 3
         && (visual.phase === "generate" || visual.phase === "recalculate" || visual.phase === "converge");
+      const selectedSchemeCanRotate = ensembleActive && visual.phase === "converge" && visual.interactive;
+      renderer.domElement.style.cursor = draggedSchemeIndex >= 0 ? "grabbing" : selectedSchemeCanRotate ? "grab" : "";
+      if (draggedSchemeIndex < 0 && selectedSchemeCanRotate) {
+        const selectedIndex = THREE.MathUtils.clamp(Math.round(visual.selectedSchemeIndex), 0, 2);
+        const velocity = schemeYawVelocity[selectedIndex];
+        if (Math.abs(velocity) > 0.0001) {
+          schemeUserYaw[selectedIndex] += velocity * delta;
+          schemeYawVelocity[selectedIndex] *= Math.exp(-delta * 7.5);
+        }
+      }
       ensembleRoot.visible = ensembleActive;
       modelGroup.visible = !ensembleActive || (visual.phase === "generate" && visual.stageProgress < 0.12);
       if (ensembleActive) {
@@ -3004,6 +3843,7 @@ export function DentalScene({
           let targetZ = 0;
           let targetScale = THREE.MathUtils.lerp(0.76, 0.51, spread);
           let schemeOpacity = ensembleReveal;
+          let targetRotationX = -0.12;
           let targetRotationY = [-0.16, 0, 0.16][schemeIndex];
           let targetRotationZ = 0;
           if (carouselInteractive) {
@@ -3017,6 +3857,17 @@ export function DentalScene({
             schemeOpacity = 0.5 + prominence * 0.5;
             targetRotationY = -0.12 + Math.sin(orbitAngle) * 0.28;
             targetRotationZ = Math.sin(orbitAngle) * 0.035;
+            const focusedZone = schemeIndex === visual.selectedSchemeIndex
+              ? rig.regions.find((region) => region.id === visual.focusRegionId)?.anatomicalZone
+              : undefined;
+            if (focusedZone) {
+              targetRotationX = focusedZone === "occlusal" ? 0.82 : -0.12;
+              targetRotationY = focusedZone === "lingual" ? Math.PI
+                : focusedZone === "mesial" ? Math.PI * 0.5
+                  : focusedZone === "distal" ? -Math.PI * 0.5 : 0;
+              targetRotationZ = 0;
+            }
+            if (schemeIndex === visual.selectedSchemeIndex) targetRotationY += schemeUserYaw[schemeIndex];
           } else if (visual.phase === "converge") {
             if (schemeIndex === 0) {
               targetX = THREE.MathUtils.lerp(basePositions[0], 0, convergence);
@@ -3039,7 +3890,9 @@ export function DentalScene({
           }
           rig.group.position.set(targetX, targetY, targetZ);
           rig.group.scale.setScalar(targetScale * responsiveEnsembleScale);
-          rig.group.rotation.set(-0.12, targetRotationY, targetRotationZ);
+          rig.group.rotation.x = reducedMotion ? targetRotationX : THREE.MathUtils.damp(rig.group.rotation.x, targetRotationX, 4.2, delta);
+          rig.group.rotation.y = reducedMotion ? targetRotationY : THREE.MathUtils.damp(rig.group.rotation.y, targetRotationY, 4.2, delta);
+          rig.group.rotation.z = reducedMotion ? targetRotationZ : THREE.MathUtils.damp(rig.group.rotation.z, targetRotationZ, 4.2, delta);
           if (!reducedMotion && visual.phase !== "converge") rig.group.position.y += Math.sin(elapsed * 0.55 + schemeIndex * 1.8) * 0.018;
           updateEnsembleSchemeRig(
             rig,
@@ -3051,13 +3904,17 @@ export function DentalScene({
             elapsed,
             schemeOpacity,
             reducedMotion,
+            visual.focusRegionId,
           );
         });
       }
       const focusRegionIndex = visual.regionalTextures.findIndex((region) => region.id === visual.focusRegionId);
       const regionalPhase = visual.phase === "segment" || visual.phase === "generate" || visual.phase === "recalculate" || visual.phase === "simulate" || visual.phase === "converge";
       controls.enableZoom = visual.interactive;
-      controls.enableRotate = visual.interactive;
+      // Orbiting the camera rotates the whole three-scheme composition.  Once a
+      // scheme converges, horizontal dragging is therefore routed to the selected
+      // tooth only; the two reference schemes retain their world-space pose.
+      controls.enableRotate = visual.interactive && !selectedSchemeCanRotate;
       controls.autoRotate = !visual.interactive && !reducedMotion && !regionalPhase && focusRegionIndex < 0;
       controls.update();
       installRegionalPlan(visual.regionalTextures, visual.textureSides, visual.wave);
@@ -3068,11 +3925,13 @@ export function DentalScene({
         state[keyName] = reducedMotion ? targets[keyName] : THREE.MathUtils.damp(state[keyName], targets[keyName], 4.1, delta);
       });
 
-      const showRegionalDesign = (visual.phase === "baseline" && visual.simulationField === "fusion") || visual.phase === "segment" || visual.phase === "generate" || visual.phase === "recalculate" || visual.phase === "simulate" || visual.phase === "converge";
+      const showRegionalDesign = phaseShowsRegionalDesign(visual.phase);
       const patternTarget = visual.phase === "generate"
         ? ease(THREE.MathUtils.clamp(visual.stageProgress * 1.08, 0, 1))
         : visual.phase === "recalculate" || visual.phase === "simulate" || visual.phase === "converge" ? 1 : 0;
-      regionalOpacity = reducedMotion ? Number(showRegionalDesign) : THREE.MathUtils.damp(regionalOpacity, showRegionalDesign ? 1 : 0, 4.6, delta);
+      regionalOpacity = !showRegionalDesign
+        ? 0
+        : reducedMotion ? 1 : THREE.MathUtils.damp(regionalOpacity, 1, 4.6, delta);
       patternOpacity = reducedMotion ? patternTarget : THREE.MathUtils.damp(patternOpacity, patternTarget, 4.3, delta);
       const enabledIndices = visual.regionalTextures
         .map((region, index) => region.enabled ? index : -1)
@@ -3125,7 +3984,7 @@ export function DentalScene({
         ? Number(scalarFieldVisible)
         : THREE.MathUtils.damp(simulationOpacity, scalarFieldVisible ? 1 : 0, 4.8, delta);
       const fusionResolve = visual.simulationField === "fusion"
-        ? ease(THREE.MathUtils.clamp((visual.simulationProgress - 0.32) / 0.56, 0, 1))
+        ? ease(THREE.MathUtils.clamp((visual.simulationProgress - 0.62) / 0.34, 0, 1))
         : 1;
       const mechanicsFieldReveal = visual.simulationField === "mechanics"
         ? ease(THREE.MathUtils.clamp((visual.simulationProgress - 0.34) / 0.32, 0, 1))
@@ -3357,16 +4216,8 @@ export function DentalScene({
         ? Number(visual.simulationField === "fusion")
         : THREE.MathUtils.damp(fusionLayerOpacity, visual.simulationField === "fusion" ? 1 : 0, 5.1, delta);
       if (fusionLayerRig) {
-        fusionLayerRig.group.visible = fusionLayerOpacity > 0.01;
         const fusionProgress = visual.simulationField === "fusion" ? visual.simulationProgress : 1;
-        const collapse = ease(THREE.MathUtils.clamp((fusionProgress - 0.18) / 0.58, 0, 1));
-        const separations = [0.075, 0, -0.065];
-        fusionLayerRig.materials.forEach((material, layerIndex) => {
-          material.uniforms.uOpacity.value = fusionLayerOpacity * (1 - collapse * 0.52);
-          material.uniforms.uProgress.value = ease(THREE.MathUtils.clamp(fusionProgress * 1.22 - layerIndex * 0.08, 0, 1));
-          material.uniforms.uSeparation.value = separations[layerIndex] * (1 - collapse);
-          material.uniforms.uTime.value = elapsed;
-        });
+        updateFusionLayerRig(fusionLayerRig, fusionProgress, elapsed, fusionLayerOpacity, reducedMotion);
       }
       heatMaterial.opacity = visual.phase === "segment"
         ? state.heat * (1 - ease(visual.stageProgress)) * 0.62
@@ -3427,7 +4278,8 @@ export function DentalScene({
       const targetRoughness = fluidActivity > 0.08 ? 0.43 : targets.scan > 0.2 ? 0.48 : 0.31;
       baseMaterial.roughness = THREE.MathUtils.damp(baseMaterial.roughness, targetRoughness, 3.2, delta);
 
-      const focusRotations = [-0.24, 0.7, -0.82];
+      const focusRotations = [0, 0, Math.PI, Math.PI * 0.5, -Math.PI * 0.5];
+      const focusTilts = [0.82, -0.12, -0.12, -0.12, -0.12];
       const modelingSweep = visual.phase === "generate" && focusRegionIndex < 0 ? (ease(visual.stageProgress) - 0.5) * 0.34 : 0;
       const fieldRotation = visual.simulationField === "mechanics" ? -0.08
         : visual.simulationField === "fluid" ? 0.24 + visual.simulationProgress * 0.1
@@ -3438,10 +4290,11 @@ export function DentalScene({
       const drift = reducedMotion ? 0 : Math.sin(elapsed * 0.25) * driftAmplitude;
       modelGroup.rotation.y = THREE.MathUtils.damp(modelGroup.rotation.y, targetRotationY + drift, 2.2, delta);
       const modelingTilt = visual.phase === "generate" ? THREE.MathUtils.lerp(-0.2, -0.04, ease(visual.stageProgress)) : -0.12;
-      const fieldTilt = visual.simulationField === "fluid" ? -0.21
-        : visual.simulationField === "bio" ? -0.06
-          : visual.simulationField === "mechanics" ? -0.15
-            : visual.simulationField === "fusion" ? -0.18 : modelingTilt;
+      const fieldTilt = focusRegionIndex >= 0 ? focusTilts[focusRegionIndex]
+        : visual.simulationField === "fluid" ? -0.21
+          : visual.simulationField === "bio" ? -0.06
+            : visual.simulationField === "mechanics" ? -0.15
+              : visual.simulationField === "fusion" ? -0.18 : modelingTilt;
       modelGroup.rotation.x = THREE.MathUtils.damp(modelGroup.rotation.x, fieldTilt, 2.4, delta);
       modelGroup.position.y = reducedMotion ? 0 : Math.sin(elapsed * 0.62) * 0.028;
       const arrival = visual.phase === "parse" || visual.phase === "ingress" ? 0.94 + ease(visual.stageProgress) * 0.06 : 1;
@@ -3550,6 +4403,57 @@ export function DentalScene({
       renderer.render(scene, camera);
     };
 
+    const pointerHitsSelectedScheme = (event: PointerEvent, schemeIndex: number) => {
+      const rig = ensembleRigs[schemeIndex];
+      if (!rig) return false;
+      const bounds = renderer.domElement.getBoundingClientRect();
+      if (bounds.width < 1 || bounds.height < 1) return false;
+      schemePointer.set(
+        ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+        -((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+      );
+      schemeRaycaster.setFromCamera(schemePointer, camera);
+      return schemeRaycaster.intersectObject(rig.hitMesh, false).length > 0;
+    };
+
+    const handleSchemePointerDown = (event: PointerEvent) => {
+      const visual = visualRef.current;
+      if (event.button !== 0 || visual.phase !== "converge" || !visual.interactive || ensembleRigs.length !== 3) return;
+      const selectedIndex = THREE.MathUtils.clamp(Math.round(visual.selectedSchemeIndex), 0, 2);
+      if (!pointerHitsSelectedScheme(event, selectedIndex)) return;
+      draggedSchemeIndex = selectedIndex;
+      dragPointerId = event.pointerId;
+      dragLastClientX = event.clientX;
+      dragLastTimestamp = event.timeStamp;
+      schemeYawVelocity[selectedIndex] = 0;
+      renderer.domElement.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+
+    const handleSchemePointerMove = (event: PointerEvent) => {
+      if (draggedSchemeIndex < 0 || event.pointerId !== dragPointerId) return;
+      const deltaX = event.clientX - dragLastClientX;
+      const elapsedMs = Math.max(8, event.timeStamp - dragLastTimestamp);
+      const deltaYaw = deltaX * 0.0082;
+      schemeUserYaw[draggedSchemeIndex] += deltaYaw;
+      schemeYawVelocity[draggedSchemeIndex] = THREE.MathUtils.clamp(deltaYaw / (elapsedMs / 1000), -4.2, 4.2);
+      dragLastClientX = event.clientX;
+      dragLastTimestamp = event.timeStamp;
+      event.preventDefault();
+    };
+
+    const finishSchemePointerDrag = (event: PointerEvent) => {
+      if (event.pointerId !== dragPointerId) return;
+      if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+      draggedSchemeIndex = -1;
+      dragPointerId = -1;
+    };
+
+    renderer.domElement.addEventListener("pointerdown", handleSchemePointerDown);
+    renderer.domElement.addEventListener("pointermove", handleSchemePointerMove);
+    renderer.domElement.addEventListener("pointerup", finishSchemePointerDrag);
+    renderer.domElement.addEventListener("pointercancel", finishSchemePointerDrag);
+
     const resize = () => {
       const width = Math.max(1, mount.clientWidth);
       const height = Math.max(1, mount.clientHeight);
@@ -3573,6 +4477,10 @@ export function DentalScene({
       disposed = true;
       observer.disconnect();
       cancelAnimationFrame(frame);
+      renderer.domElement.removeEventListener("pointerdown", handleSchemePointerDown);
+      renderer.domElement.removeEventListener("pointermove", handleSchemePointerMove);
+      renderer.domElement.removeEventListener("pointerup", finishSchemePointerDrag);
+      renderer.domElement.removeEventListener("pointercancel", finishSchemePointerDrag);
       planPrebuildTimers.forEach((timer) => window.clearTimeout(timer));
       controls.dispose();
       const disposedGeometries = new Set<THREE.BufferGeometry>();
