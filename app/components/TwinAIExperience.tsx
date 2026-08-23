@@ -86,7 +86,7 @@ const phaseDurations = [1800, 21000, 7200, 16000, 2300];
 const modelingSteps = ["融合场锁定", "区域生长", "纹理匹配", "逐区雕刻"];
 const simulationFields: Array<{ id: Exclude<SimulationField, "none">; name: string; code: string; note: string }> = [
   { id: "mechanics", name: "力学响应场", code: "MECHANICAL", note: "应力集中 · 结构稳定 · 疲劳风险" },
-  { id: "fluid", name: "表面流体场", code: "SURFACE FLOW", note: "交换速率 · 流线组织 · 滞留风险" },
+  { id: "fluid", name: "表面流体场", code: "SURFACE FLOW", note: "液膜铺展 · 局部滞留 · 表面交换" },
   { id: "bio", name: "微生态风险场", code: "MICROECOLOGY", note: "吸附倾向 · 矿化沉积 · 定植风险" },
   { id: "fusion", name: "多场融合", code: "FIELD FUSION", note: "作为区域与微织构设计的数据依据" },
 ];
@@ -99,11 +99,11 @@ const simulationStages: Record<Exclude<SimulationField, "none">, Array<{ end: nu
     { end: 1, label: "疲劳循环与稳定", code: "FATIGUE CYCLE" },
   ],
   fluid: [
-    { end: 0.2, label: "唾液薄膜润湿", code: "SURFACE WETTING" },
-    { end: 0.45, label: "速度场与流迹建立", code: "FLOW ADVECTION" },
-    { end: 0.68, label: "分流、汇流与滞留", code: "RETENTION SOLVE" },
-    { end: 0.88, label: "局部涡旋演化", code: "VORTEX EVOLUTION" },
-    { end: 1, label: "表面交换通量", code: "EXCHANGE FLUX" },
+    { end: 0.2, label: "液膜接触与湿润铺展", code: "FILM WETTING" },
+    { end: 0.45, label: "连续速度场建立", code: "VELOCITY FIELD" },
+    { end: 0.68, label: "液膜分流与厚度演化", code: "FILM TRANSPORT" },
+    { end: 0.88, label: "局部滞留与涡旋演化", code: "RETENTION DYNAMICS" },
+    { end: 1, label: "表面交换通量稳定", code: "EXCHANGE STABILIZE" },
   ],
   bio: [
     { end: 0.22, label: "唾液条件膜形成", code: "CONDITIONING FILM" },
@@ -128,7 +128,7 @@ const simulationEvidence: Record<Exclude<SimulationField, "none">, Array<{ label
   fluid: [
     { label: "交换能力", baseline: "0.57", candidate: "0.82" },
     { label: "局部滞留", baseline: "0.69", candidate: "0.41" },
-    { label: "流线连续", baseline: "0.63", candidate: "0.88" },
+    { label: "液膜连续", baseline: "0.63", candidate: "0.88" },
   ],
   bio: [
     { label: "吸附倾向", baseline: "0.64", candidate: "0.45" },

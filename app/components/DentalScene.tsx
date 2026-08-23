@@ -176,20 +176,6 @@ type SimulationBoundaryRig = {
   supports: THREE.Mesh[];
   supportMaterials: THREE.Material[];
 };
-type SurfaceFlowPath = {
-  baseline: THREE.Vector3[];
-  candidate: THREE.Vector3[];
-  line: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
-  ghostLine: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
-};
-type SurfaceFlowRig = {
-  group: THREE.Group;
-  paths: SurfaceFlowPath[];
-  vortices: Array<THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>>;
-  exchangeFlux: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
-  inlet: THREE.Group;
-  inletMaterials: THREE.Material[];
-};
 type MechanicsFieldRig = {
   group: THREE.Group;
   stressLines: Array<THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>>;
@@ -221,12 +207,6 @@ type FusionLayerRig = {
   fieldContours: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>[];
   confidenceLines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>[];
 };
-type EnsembleParticleRig = {
-  count: number;
-  geometry: THREE.BufferGeometry;
-  material: THREE.ShaderMaterial;
-  points: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
-};
 type EnsembleSchemeRig = {
   group: THREE.Group;
   hitMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
@@ -238,12 +218,10 @@ type EnsembleSchemeRig = {
   bioMaterial: THREE.ShaderMaterial;
   boundaryRig: SimulationBoundaryRig;
   mechanicsRig: MechanicsFieldRig;
-  flowRig: SurfaceFlowRig;
   bioNetworkRig: BioNetworkRig;
   bioRiskMaterial: THREE.ShaderMaterial;
   bioRiskPoints: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
   fusionRig: FusionLayerRig;
-  particles: EnsembleParticleRig;
 };
 
 const AQUA = new THREE.Color(0x83d6c5);
@@ -1173,8 +1151,14 @@ function createSurfacePatchMaterial(color: number) {
         color += blueprint * vec3(0.48, 0.95, 0.83) * 0.36;
         color += boundary * vec3(0.5, 0.86, 0.78) * (0.16 + uDecision * 0.38);
         color += growthFront * vec3(0.72, 1.0, 0.94) * 0.62;
-        float flowPulse = 0.5 + 0.5 * sin(vFlowCoordinate * 6.28318 - uTime * 5.2);
-        color += groove * flowPulse * uFlow * vec3(0.24, 0.92, 0.76) * 0.5;
+        float capillaryPhase = fract(vFlowCoordinate - uTime * 0.78);
+        float capillaryBody = smoothstep(0.04, 0.18, capillaryPhase) * (1.0 - smoothstep(0.58, 0.92, capillaryPhase));
+        float capillaryEchoPhase = fract(vFlowCoordinate * 0.63 - uTime * 0.38 + 0.46);
+        float capillaryEcho = smoothstep(0.12, 0.28, capillaryEchoPhase) * (1.0 - smoothstep(0.5, 0.82, capillaryEchoPhase));
+        float capillaryFlow = groove * uFlow * (capillaryBody * 0.78 + capillaryEcho * 0.28);
+        color = mix(color, vec3(0.055, 0.28, 0.27), groove * uFlow * 0.28);
+        color += capillaryFlow * vec3(0.5, 1.0, 0.88) * 0.58;
+        color += shoulder * uFlow * vec3(0.22, 0.55, 0.5) * 0.12;
         color *= mix(0.58, 1.0, uFocus);
         float alpha = uOpacity * revealAlpha * mix(0.76, 0.96, uFocus);
         gl_FragColor = vec4(color, alpha);
@@ -1736,52 +1720,289 @@ function createSimulationFieldMaterial() {
   });
 }
 
-function createFluidRetentionMaterial() {
+function createThinFilmFlowMaterial(bounds?: THREE.Box3) {
+  const initialBounds = bounds ?? new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
   return new THREE.ShaderMaterial({
     uniforms: {
       uOpacity: { value: 0 },
       uProgress: { value: 0 },
       uTime: { value: 0 },
-      uRecalculation: { value: 0 },
+      uCandidate: { value: 0 },
+      uVelocity: { value: 0.82 },
+      uRetention: { value: 1 },
+      uExchange: { value: 0.42 },
+      uStabilize: { value: 0 },
+      uMotion: { value: 1 },
+      uReadability: { value: 1 },
+      uScheme: { value: 0 },
+      uBoundsMin: { value: initialBounds.min.clone() },
+      uBoundsSize: { value: initialBounds.getSize(new THREE.Vector3()) },
     },
     vertexShader: `
       attribute float aFluid;
-      attribute float aFieldOrder;
-      uniform float uRecalculation;
+      uniform vec3 uBoundsMin;
+      uniform vec3 uBoundsSize;
+      uniform float uCandidate;
+      uniform float uRetention;
+      uniform float uExchange;
+      uniform float uVelocity;
+      uniform float uProgress;
+      uniform float uTime;
+      uniform float uStabilize;
+      uniform float uMotion;
+      uniform float uReadability;
+      uniform float uScheme;
       varying float vFluid;
-      varying float vOrder;
       varying vec3 vPosition;
+      varying vec3 vNormalized;
+      varying vec3 vViewNormal;
+      varying vec3 vViewPosition;
+      varying float vFilmHeight;
+      varying float vFilmCrest;
       void main() {
-        vFluid = aFluid * mix(1.0, 0.62, uRecalculation);
-        vOrder = aFieldOrder;
+        vFluid = aFluid;
         vPosition = position;
-        vec3 lifted = position + normal * (0.008 + aFluid * 0.006);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(lifted, 1.0);
+        vNormalized = (position - uBoundsMin) / max(uBoundsSize, vec3(0.0001));
+        float wetOrder = clamp(
+          (1.0 - vNormalized.y) * 0.72
+          + abs(vNormalized.x - 0.5) * 0.16
+          + abs(vNormalized.z - 0.5) * 0.12,
+          0.0,
+          1.0
+        );
+        float wetTimeline = smoothstep(0.0, 0.3, uProgress) * 1.12;
+        float wetMask = 1.0 - smoothstep(wetTimeline - 0.035, wetTimeline + 0.08, wetOrder);
+        float wetFront = 1.0 - smoothstep(0.01, 0.085, abs(wetOrder - wetTimeline));
+        float transport = smoothstep(0.18, 0.32, uProgress);
+        float retentionBuild = smoothstep(0.5, 0.8, uProgress);
+        float motionRate = mix(1.0, 0.42, uStabilize) * uMotion;
+        float activeVelocity = mix(0.9, uVelocity, uCandidate);
+        float flowTime = uTime * activeVelocity * motionRate;
+        vec2 surfacePlane = vec2(
+          clamp(vNormalized.x * 0.72 + vNormalized.z * 0.28, 0.0, 1.0),
+          vNormalized.y
+        );
+        float schemeShift = (uScheme - 1.0) * 0.055;
+        vec2 poolDeltaA = (surfacePlane - vec2(0.72 + schemeShift, 0.42)) / vec2(0.18, 0.15);
+        vec2 poolDeltaB = (surfacePlane - vec2(0.38 - schemeShift * 0.6, 0.62)) / vec2(0.14, 0.12);
+        float poolField = clamp(exp(-dot(poolDeltaA, poolDeltaA)) * 0.82 + exp(-dot(poolDeltaB, poolDeltaB)) * 0.42, 0.0, 1.0);
+        float retained = clamp(aFluid * uRetention * 0.74 + poolField * uRetention * 0.4, 0.0, 1.0);
+        float longitudinal = wetOrder * 1.62
+          + surfacePlane.x * 0.18
+          + sin(surfacePlane.x * 10.0 + vNormalized.z * 5.0 - flowTime * 0.8) * 0.025;
+        float slowedTime = flowTime * mix(1.0, 0.48, retained);
+        float pulseA = fract(longitudinal * 0.92 - slowedTime * 0.54);
+        float pulseB = fract(longitudinal * 0.86 - slowedTime * 0.47 + 0.34 + uScheme * 0.11);
+        float pulseC = fract(longitudinal * 0.78 - slowedTime * 0.41 + 0.68 - uScheme * 0.08);
+        float crestA = exp(-pow((pulseA - 0.25) / 0.14, 2.0));
+        float crestB = exp(-pow((pulseB - 0.28) / 0.16, 2.0));
+        float crestC = exp(-pow((pulseC - 0.3) / 0.18, 2.0));
+        float hydrodynamicWidth = clamp(0.88 + uRetention * 0.22 - uExchange * 0.09, 0.82, 1.12);
+        float centerA = 0.27 + sin(longitudinal * 7.5 - flowTime * 1.35 + uScheme * 0.7) * (0.055 + uExchange * 0.012);
+        float centerB = 0.51 + sin(longitudinal * 6.1 - flowTime * 1.12 + 1.8 - uScheme * 0.45) * 0.075;
+        float centerC = 0.75 + sin(longitudinal * 7.0 - flowTime * 1.24 + 3.7 + uScheme * 0.38) * (0.045 + uRetention * 0.018);
+        float ribbonA = exp(-pow((surfacePlane.x - centerA) / (0.12 * hydrodynamicWidth), 2.0));
+        float ribbonB = exp(-pow((surfacePlane.x - centerB) / (0.135 * hydrodynamicWidth), 2.0));
+        float ribbonC = exp(-pow((surfacePlane.x - centerC) / (0.115 * hydrodynamicWidth), 2.0));
+        float travelingCrest = max(ribbonA * crestA, max(ribbonB * crestB, ribbonC * crestC)) * transport;
+        float shoulderWave = (0.5 + 0.5 * sin(longitudinal * 19.0 - slowedTime * 3.5 + surfacePlane.x * 7.0))
+          * travelingCrest;
+        float poolSwell = retained * retentionBuild
+          * (0.78 + sin(flowTime * 1.45 + poolField * 6.0 + uScheme) * 0.22);
+        float capillaryRipple = sin(longitudinal * 37.0 - flowTime * 4.2 + surfacePlane.x * 13.0)
+          * (0.5 + aFluid * 0.5)
+          * transport;
+        float thicknessResponse = clamp(1.08 + uRetention * 0.3 - uExchange * 0.16, 0.88, 1.28);
+        float readabilityLift = mix(1.0, 1.34, clamp(uReadability - 1.0, 0.0, 1.0));
+        float filmLift = (
+          0.009
+          + aFluid * uRetention * 0.005
+          + travelingCrest * 0.017
+          + shoulderWave * 0.0045
+          + poolSwell * 0.009
+          + wetFront * 0.006
+          + capillaryRipple * 0.0018
+        ) * wetMask * thicknessResponse * readabilityLift;
+        vFilmHeight = max(0.0, filmLift);
+        vFilmCrest = clamp(travelingCrest * 0.82 + shoulderWave * 0.28 + poolSwell * 0.38, 0.0, 1.0);
+        vec3 lifted = position + normal * filmLift;
+        vec4 viewPosition = modelViewMatrix * vec4(lifted, 1.0);
+        vViewPosition = viewPosition.xyz;
+        vViewNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * viewPosition;
       }
     `,
     fragmentShader: `
       uniform float uOpacity;
       uniform float uProgress;
       uniform float uTime;
+      uniform float uCandidate;
+      uniform float uVelocity;
+      uniform float uRetention;
+      uniform float uExchange;
+      uniform float uStabilize;
+      uniform float uMotion;
+      uniform float uReadability;
+      uniform float uScheme;
       varying float vFluid;
-      varying float vOrder;
       varying vec3 vPosition;
+      varying vec3 vNormalized;
+      varying vec3 vViewNormal;
+      varying vec3 vViewPosition;
+      varying float vFilmHeight;
+      varying float vFilmCrest;
+      float hash21(vec2 value) {
+        value = fract(value * vec2(123.34, 456.21));
+        value += dot(value, value + 45.32);
+        return fract(value.x * value.y);
+      }
+      float noise21(vec2 value) {
+        vec2 index = floor(value);
+        vec2 fraction = fract(value);
+        fraction = fraction * fraction * (3.0 - 2.0 * fraction);
+        return mix(
+          mix(hash21(index), hash21(index + vec2(1.0, 0.0)), fraction.x),
+          mix(hash21(index + vec2(0.0, 1.0)), hash21(index + vec2(1.0, 1.0)), fraction.x),
+          fraction.y
+        );
+      }
+      float softPool(vec2 point, vec2 center, vec2 radius) {
+        vec2 delta = (point - center) / radius;
+        return exp(-dot(delta, delta));
+      }
       void main() {
-        float wetTimeline = clamp(uProgress / 0.3, 0.0, 1.0);
-        float wetFront = smoothstep(vOrder - 0.16, vOrder + 0.025, wetTimeline);
-        float transport = smoothstep(0.2, 0.46, uProgress);
-        float retentionBuild = smoothstep(0.4, 0.74, uProgress);
-        float retained = smoothstep(0.34, 0.82, vFluid);
-        float slowEddy = 0.5 + 0.5 * sin(vPosition.x * 21.0 - vPosition.y * 13.0 + uTime * 1.25);
-        float movingShear = 0.5 + 0.5 * sin(vPosition.y * 42.0 - uTime * 3.2 + vPosition.x * 7.0);
-        float boundary = 1.0 - smoothstep(0.0, 0.05, abs(vOrder - wetTimeline));
-        float film = wetFront * (0.035 + vFluid * 0.045);
-        float reservoir = retained * retentionBuild * (0.055 + slowEddy * 0.09);
-        if (film + reservoir < 0.005) discard;
-        vec3 color = mix(vec3(0.13, 0.43, 0.43), vec3(0.54, 0.94, 0.86), slowEddy * 0.34 + retained * 0.42);
-        color += boundary * vec3(0.76, 1.0, 0.95) * 0.58;
-        color += movingShear * vec3(0.14, 0.36, 0.35) * transport * (1.0 - retained) * 0.16;
-        float alpha = (film * 1.9 + reservoir * 1.75 + boundary * 0.13) * uOpacity;
+        vec3 surface = clamp(vNormalized, 0.0, 1.0);
+        float wetOrder = clamp(
+          (1.0 - surface.y) * 0.72
+          + abs(surface.x - 0.5) * 0.16
+          + abs(surface.z - 0.5) * 0.12,
+          0.0,
+          1.0
+        );
+        float wetTimeline = smoothstep(0.0, 0.3, uProgress) * 1.12;
+        float wetFilm = 1.0 - smoothstep(wetTimeline - 0.035, wetTimeline + 0.08, wetOrder);
+        float wetEdge = (1.0 - smoothstep(0.008, 0.075, abs(wetOrder - wetTimeline)))
+          * (1.0 - smoothstep(0.3, 0.4, uProgress));
+        float transport = smoothstep(0.18, 0.32, uProgress);
+        float retentionBuild = smoothstep(0.5, 0.8, uProgress);
+        float stabilized = smoothstep(0.82, 1.0, uProgress);
+
+        vec2 surfacePlane = vec2(
+          clamp(surface.x * 0.72 + surface.z * 0.28, 0.0, 1.0),
+          surface.y
+        );
+        float schemeShift = (uScheme - 1.0) * 0.055;
+        float poolA = softPool(surfacePlane, vec2(0.72 + schemeShift, 0.42), vec2(0.18, 0.15));
+        float poolB = softPool(surfacePlane, vec2(0.38 - schemeShift * 0.6, 0.62), vec2(0.14, 0.12));
+        float poolC = softPool(surfacePlane, vec2(0.56 + schemeShift * 0.35, 0.28), vec2(0.11, 0.09));
+        float poolField = clamp(poolA * 0.82 + poolB * (0.4 + uScheme * 0.08) + poolC * 0.36, 0.0, 1.0);
+        float retained = clamp(vFluid * uRetention * 0.72 + poolField * uRetention * 0.42, 0.0, 1.0);
+
+        float motionRate = mix(1.0, 0.42, uStabilize) * uMotion;
+        float activeVelocity = mix(0.9, uVelocity, uCandidate);
+        float flowTime = uTime * activeVelocity * motionRate;
+        float broadNoise = noise21(vec2(surfacePlane.x * 5.4 - flowTime * 0.2, surfacePlane.y * 5.1 + flowTime * 0.09));
+        float fineNoise = noise21(vec2(surfacePlane.x * 12.0 + flowTime * 0.13, surfacePlane.y * 10.0 - flowTime * 0.21));
+        float longitudinal = wetOrder * 1.62
+          + surfacePlane.x * 0.18
+          + (broadNoise - 0.5) * 0.13
+          + sin(surfacePlane.x * 10.0 + surface.z * 5.0 - flowTime * 0.8) * 0.025;
+        float slowedTime = flowTime * mix(1.0, 0.48, retained);
+        float pulseA = fract(longitudinal * 0.92 - slowedTime * 0.54);
+        float pulseB = fract(longitudinal * 0.86 - slowedTime * 0.47 + 0.34 + uScheme * 0.11);
+        float pulseC = fract(longitudinal * 0.78 - slowedTime * 0.41 + 0.68 - uScheme * 0.08);
+        float trainA = smoothstep(0.03, 0.13, pulseA) * (1.0 - smoothstep(0.58, 0.9, pulseA));
+        float trainB = smoothstep(0.04, 0.16, pulseB) * (1.0 - smoothstep(0.55, 0.88, pulseB));
+        float trainC = smoothstep(0.05, 0.18, pulseC) * (1.0 - smoothstep(0.5, 0.84, pulseC));
+
+        float readabilityWidth = mix(1.0, 1.24, clamp(uReadability - 1.0, 0.0, 1.0));
+        float hydrodynamicWidth = clamp(0.88 + uRetention * 0.22 - uExchange * 0.09, 0.82, 1.12);
+        float visualWidth = readabilityWidth * hydrodynamicWidth;
+        float centerA = 0.27 + sin(longitudinal * 7.5 - flowTime * 1.35 + uScheme * 0.7) * (0.055 + uExchange * 0.012);
+        float centerB = 0.51 + sin(longitudinal * 6.1 - flowTime * 1.12 + 1.8 - uScheme * 0.45) * 0.075;
+        float centerC = 0.75 + sin(longitudinal * 7.0 - flowTime * 1.24 + 3.7 + uScheme * 0.38) * (0.045 + uRetention * 0.018);
+        float ribbonA = exp(-pow((surfacePlane.x - centerA) / (0.11 * visualWidth), 2.0));
+        float ribbonB = exp(-pow((surfacePlane.x - centerB) / (0.125 * visualWidth), 2.0));
+        float ribbonC = exp(-pow((surfacePlane.x - centerC) / (0.105 * visualWidth), 2.0));
+        float splitGate = smoothstep(0.25, 0.58, surface.y) * (1.0 - smoothstep(0.78, 0.97, surface.y));
+        float mergeBridge = exp(-pow((surfacePlane.x - mix(centerA, centerB, 0.5)) / (0.17 * visualWidth), 2.0))
+          * sin(longitudinal * 5.4 - flowTime * 1.6) * 0.5 + 0.5;
+        float movingRibbons = max(ribbonA * trainA, max(ribbonB * trainB, ribbonC * trainC));
+        movingRibbons = max(movingRibbons, mergeBridge * splitGate * trainB * 0.52);
+        movingRibbons *= transport * mix(1.0, 0.82, stabilized) * wetFilm;
+
+        vec2 vortexPoint = surfacePlane - vec2(0.7 + schemeShift, 0.43);
+        float vortexRadius = length(vortexPoint);
+        float vortexAngle = atan(vortexPoint.y, vortexPoint.x) / 6.2831853;
+        float vortexPhase = fract(vortexAngle + vortexRadius * 3.1 - flowTime * (0.22 + uRetention * 0.08));
+        float vortexRibbon = smoothstep(0.04, 0.18, vortexPhase)
+          * (1.0 - smoothstep(0.48, 0.8, vortexPhase))
+          * (1.0 - smoothstep(0.05, 0.25, vortexRadius))
+          * retained
+          * retentionBuild
+          * wetFilm;
+
+        float exchangeThreads = pow(
+          max(0.0, sin((surface.x + surface.z * 0.42) * 72.0 + surface.y * 39.0 - flowTime * 4.8)),
+          10.0
+        ) * uExchange * uCandidate * transport * (1.0 - retained * 0.58);
+        float poolBreath = retained * retentionBuild
+          * (0.82 + sin(flowTime * 1.5 + poolField * 6.0 + uScheme) * 0.18);
+        float thicknessRipple = (fineNoise - 0.5) * 0.22
+          + sin(flowTime * 1.1 + retained * 8.0) * retained * 0.1;
+        float filmThickness = clamp(0.3 + poolBreath * 0.62 + thicknessRipple, 0.14, 1.0);
+
+        float normalWaveA = sin(longitudinal * 34.0 - flowTime * 3.6 + surfacePlane.x * 8.0);
+        float normalWaveB = cos(surfacePlane.x * 29.0 + flowTime * 2.7 + retained * 6.0);
+        float opticalActivity = wetFilm * (0.03 + movingRibbons * 0.11 + poolBreath * 0.055);
+        vec2 heightGradient = vec2(dFdx(vFilmHeight), dFdy(vFilmHeight));
+        vec3 filmNormal = normalize(
+          vViewNormal
+          + vec3(normalWaveA, normalWaveB, 0.0) * opticalActivity
+          + vec3(-heightGradient.x, -heightGradient.y, 0.0) * 28.0
+        );
+        vec3 viewDirection = normalize(-vViewPosition);
+        float facing = max(0.0, dot(filmNormal, viewDirection));
+        float fresnel = pow(1.0 - facing, 2.1);
+        vec3 lightDirection = normalize(vec3(-0.3, 0.62, 0.72));
+        vec3 halfDirection = normalize(lightDirection + viewDirection);
+        float specular = pow(max(0.0, dot(filmNormal, halfDirection)), mix(38.0, 25.0, vFilmCrest))
+          * (0.42 + movingRibbons * 0.78 + vFilmCrest * 0.72 + wetEdge * 0.7);
+        float caustic = pow(max(0.0, sin(
+          longitudinal * 24.0
+          + surfacePlane.x * 18.0
+          - flowTime * 4.2
+          + broadNoise * 3.0
+        )), 9.0) * movingRibbons;
+        float softLight = 0.69 + max(0.0, dot(filmNormal, lightDirection)) * 0.34;
+
+        vec3 deepFilm = vec3(0.075, 0.29, 0.31);
+        vec3 clearFilm = vec3(0.34, 0.74, 0.69);
+        vec3 dyeColor = vec3(0.76, 1.0, 0.92);
+        float visibleThickness = smoothstep(0.007, 0.038, vFilmHeight);
+        vec3 color = mix(deepFilm, clearFilm, 0.38 + movingRibbons * 0.42 + (1.0 - retained) * 0.1) * softLight;
+        color = mix(color, vec3(0.09, 0.32, 0.34), visibleThickness * 0.22 + poolBreath * 0.22);
+        color += dyeColor * movingRibbons * 0.64;
+        color += vec3(0.62, 0.94, 0.88) * visibleThickness * 0.16;
+        color += vec3(0.82, 1.0, 0.95) * vFilmCrest * (0.18 + specular * 0.42);
+        color += dyeColor * wetEdge * 0.85;
+        color += vec3(0.56, 0.96, 0.86) * exchangeThreads * 0.42;
+        color += vec3(0.7, 1.0, 0.94) * (specular * 0.66 + caustic * 0.34);
+        color += vec3(0.27, 0.62, 0.61) * fresnel * 0.24;
+        float alpha = wetFilm * (
+          0.09
+          + filmThickness * 0.085
+          + visibleThickness * 0.075
+          + vFilmCrest * 0.065
+          + movingRibbons * 0.19
+          + poolBreath * 0.06
+          + fresnel * 0.055
+          + exchangeThreads * 0.075
+          + caustic * 0.08
+        ) + wetEdge * 0.38;
+        alpha *= uOpacity * uReadability;
+        alpha = min(alpha, 0.62);
+        if (alpha < 0.004) discard;
         gl_FragColor = vec4(color, alpha);
       }
     `,
@@ -1789,7 +2010,38 @@ function createFluidRetentionMaterial() {
     depthWrite: false,
     blending: THREE.NormalBlending,
     side: THREE.FrontSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
   });
+}
+
+function configureThinFilmFlowBounds(material: THREE.ShaderMaterial, bounds: THREE.Box3) {
+  material.uniforms.uBoundsMin.value.copy(bounds.min);
+  material.uniforms.uBoundsSize.value.copy(bounds.getSize(new THREE.Vector3()));
+}
+
+function configureThinFilmFlowResponse(
+  material: THREE.ShaderMaterial,
+  response: {
+    candidate: number;
+    velocity: number;
+    retention: number;
+    exchange: number;
+    stabilize?: number;
+    motion?: number;
+    readability?: number;
+    scheme?: number;
+  },
+) {
+  material.uniforms.uCandidate.value = response.candidate;
+  material.uniforms.uVelocity.value = response.velocity;
+  material.uniforms.uRetention.value = response.retention;
+  material.uniforms.uExchange.value = response.exchange;
+  material.uniforms.uStabilize.value = response.stabilize ?? 0;
+  material.uniforms.uMotion.value = response.motion ?? 1;
+  material.uniforms.uReadability.value = response.readability ?? 1;
+  material.uniforms.uScheme.value = response.scheme ?? 0;
 }
 
 function createBioFilmMaterial() {
@@ -2100,140 +2352,6 @@ function createMechanicsFieldRig(surface: SurfaceProjectionIndex, source: THREE.
   group.add(ghost);
   group.visible = false;
   return { group, stressLines, displacementMaterial, ghostMaterial };
-}
-
-function createSurfaceFlowRig(surface: SurfaceProjectionIndex): SurfaceFlowRig {
-  const group = new THREE.Group();
-  group.name = "surface-flow-streamlines";
-  const paths: SurfaceFlowPath[] = [];
-  const vortices: Array<THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>> = [];
-  const projectedPosition = new THREE.Vector3();
-  const projectedNormal = new THREE.Vector3();
-  const samples = 150;
-  const laneCount = 24;
-  for (let lane = 0; lane < laneCount; lane++) {
-    const baseline: THREE.Vector3[] = [];
-    const candidate: THREE.Vector3[] = [];
-    for (let sample = 0; sample < samples; sample++) {
-      const t = sample / (samples - 1);
-      const normalizedY = THREE.MathUtils.lerp(0.1, 0.92, t);
-      const laneBase = 0.08 + lane * (0.84 / (laneCount - 1));
-      const retentionBend = Math.exp(-Math.pow((normalizedY - 0.4) / 0.18, 2));
-      const baselineX = laneBase + Math.sin(t * Math.PI * 1.65 + lane * 0.7) * 0.034
-        + Math.sin(t * Math.PI * 5.5 + lane * 0.9) * retentionBend * 0.027;
-      const candidateInfluence = Math.exp(-Math.pow((normalizedY - 0.4) / 0.24, 2));
-      const candidateX = laneBase + Math.sin(t * Math.PI * 1.42 + lane * 0.64) * 0.024
-        + Math.sin(t * Math.PI * 8 + lane) * 0.012 * candidateInfluence;
-      if (projectSurfacePoint(baselineX, normalizedY, surface, projectedPosition, projectedNormal)) {
-        baseline.push(projectedPosition.clone().addScaledVector(projectedNormal, 0.026));
-      } else {
-        baseline.push(baseline[baseline.length - 1]?.clone() ?? new THREE.Vector3());
-      }
-      if (projectSurfacePoint(candidateX, normalizedY, surface, projectedPosition, projectedNormal)) {
-        candidate.push(projectedPosition.clone().addScaledVector(projectedNormal, 0.028));
-      } else {
-        candidate.push(baseline[baseline.length - 1].clone());
-      }
-    }
-    const geometry = new THREE.BufferGeometry().setFromPoints(baseline);
-    const material = new THREE.LineBasicMaterial({ color: lane % 2 ? 0x83d6c5 : 0xb8f8ea, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
-    const line = new THREE.Line(geometry, material);
-    const ghostGeometry = new THREE.BufferGeometry().setFromPoints(baseline);
-    const ghostMaterial = new THREE.LineBasicMaterial({ color: 0x557c76, transparent: true, opacity: 0, depthWrite: false });
-    const ghostLine = new THREE.Line(ghostGeometry, ghostMaterial);
-    group.add(ghostLine, line);
-    paths.push({ baseline, candidate, line, ghostLine });
-  }
-
-  [[0.66, 0.37, 0.078], [0.73, 0.47, 0.064], [0.57, 0.3, 0.056], [0.62, 0.5, 0.046]].forEach(([centerX, centerY, radius], vortexIndex) => {
-    const points: THREE.Vector3[] = [];
-    for (let sample = 0; sample < 180; sample++) {
-      const t = sample / 179;
-      const angle = t * Math.PI * 5.2 + vortexIndex * 0.8;
-      const spiralRadius = radius * THREE.MathUtils.lerp(1, 0.22, t);
-      const normalizedX = centerX + Math.cos(angle) * spiralRadius;
-      const normalizedY = centerY + Math.sin(angle) * spiralRadius * 0.72;
-      if (!projectSurfacePoint(normalizedX, normalizedY, surface, projectedPosition, projectedNormal)) continue;
-      points.push(projectedPosition.clone().addScaledVector(projectedNormal, 0.034 + vortexIndex * 0.003));
-    }
-    if (points.length < 8) return;
-    const material = new THREE.LineBasicMaterial({ color: 0x8ae5d5, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
-    const vortex = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material);
-    vortex.geometry.setDrawRange(0, 0);
-    group.add(vortex);
-    vortices.push(vortex);
-  });
-  const exchangeSegments: number[] = [];
-  for (let row = 0; row < 7; row++) {
-    for (let column = 0; column < 9; column++) {
-      const normalizedX = 0.15 + column * 0.087 + Math.sin(row * 1.7 + column) * 0.008;
-      const normalizedY = 0.2 + row * 0.105 + Math.cos(column * 1.3 + row) * 0.01;
-      const retentionZone = Math.exp(-(((normalizedX - 0.68) / 0.16) ** 2 + ((normalizedY - 0.4) / 0.16) ** 2));
-      if (retentionZone > 0.46 || !projectSurfacePoint(normalizedX, normalizedY, surface, projectedPosition, projectedNormal)) continue;
-      const fluxLength = 0.035 + (1 - retentionZone) * 0.038;
-      const start = projectedPosition.clone().addScaledVector(projectedNormal, 0.025);
-      const end = projectedPosition.clone().addScaledVector(projectedNormal, fluxLength);
-      exchangeSegments.push(start.x, start.y, start.z, end.x, end.y, end.z);
-    }
-  }
-  const exchangeGeometry = new THREE.BufferGeometry();
-  exchangeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(exchangeSegments, 3));
-  exchangeGeometry.setDrawRange(0, 0);
-  const exchangeMaterial = new THREE.LineBasicMaterial({
-    color: 0xb9fff1,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-  const exchangeFlux = new THREE.LineSegments(exchangeGeometry, exchangeMaterial);
-  group.add(exchangeFlux);
-  const inlet = new THREE.Group();
-  inlet.name = "surface-flow-inlet";
-  const inletMaterials: THREE.Material[] = [];
-  const inletPoints: THREE.Vector3[] = [];
-  for (let sample = 0; sample < 36; sample++) {
-    const normalizedX = 0.1 + sample / 35 * 0.8;
-    const normalizedY = 0.095 + Math.sin(sample / 35 * Math.PI) * 0.018;
-    if (!projectSurfacePoint(normalizedX, normalizedY, surface, projectedPosition, projectedNormal)) continue;
-    inletPoints.push(projectedPosition.clone().addScaledVector(projectedNormal, 0.052));
-  }
-  if (inletPoints.length > 4) {
-    const inletMaterial = new THREE.MeshPhysicalMaterial({
-      color: 0x8de4d5,
-      emissive: 0x2b766e,
-      emissiveIntensity: 0.28,
-      roughness: 0.12,
-      transmission: 0.48,
-      thickness: 0.04,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-    });
-    const inletCurve = new THREE.CatmullRomCurve3(inletPoints, false, "centripetal", 0.28);
-    inlet.add(new THREE.Mesh(new THREE.TubeGeometry(inletCurve, 100, 0.012, 8, false), inletMaterial));
-    inletMaterials.push(inletMaterial);
-    const dropletMaterial = new THREE.MeshPhysicalMaterial({
-      color: 0xc2fff3,
-      emissive: 0x377d73,
-      emissiveIntensity: 0.3,
-      roughness: 0.08,
-      transmission: 0.5,
-      transparent: true,
-      opacity: 0,
-      depthWrite: false,
-    });
-    inletPoints.filter((_, index) => index % 4 === 1).forEach((point, index) => {
-      const droplet = new THREE.Mesh(new THREE.SphereGeometry(0.017 + index % 3 * 0.003, 12, 8), dropletMaterial);
-      droplet.position.copy(point);
-      inlet.add(droplet);
-    });
-    inletMaterials.push(dropletMaterial);
-  }
-  inlet.scale.setScalar(0.001);
-  group.add(inlet);
-  group.visible = false;
-  return { group, paths, vortices, exchangeFlux, inlet, inletMaterials };
 }
 
 function createBioNetworkRig(surface: SurfaceProjectionIndex): BioNetworkRig {
@@ -2680,53 +2798,6 @@ function updateFusionLayerRig(
   });
 }
 
-function createSurfaceFlowParticleMaterial(pixelRatio: number) {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      uOpacity: { value: 0 },
-      uPixelRatio: { value: pixelRatio },
-      uRecalculation: { value: 0 },
-    },
-    vertexShader: `
-      attribute float aVelocity;
-      attribute float aRetention;
-      attribute float aActive;
-      uniform float uPixelRatio;
-      varying float vVelocity;
-      varying float vRetention;
-      varying float vActive;
-      void main() {
-        vVelocity = aVelocity;
-        vRetention = aRetention;
-        vActive = aActive;
-        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = (1.8 + aVelocity * 4.25 + aRetention * 1.6) * uPixelRatio * (5.7 / max(1.0, -viewPosition.z));
-        gl_Position = projectionMatrix * viewPosition;
-      }
-    `,
-    fragmentShader: `
-      uniform float uOpacity;
-      uniform float uRecalculation;
-      varying float vVelocity;
-      varying float vRetention;
-      varying float vActive;
-      void main() {
-        vec2 centered = gl_PointCoord - 0.5;
-        float radius = length(centered);
-        if (radius > 0.5) discard;
-        float core = 1.0 - smoothstep(0.06, 0.5, radius);
-        vec3 flowColor = mix(vec3(0.25, 0.65, 0.62), vec3(0.78, 1.0, 0.94), vVelocity);
-        flowColor = mix(flowColor, vec3(0.42, 0.73, 0.69), vRetention * (1.0 - uRecalculation));
-        float alpha = core * (0.58 + vVelocity * 0.54) * mix(1.0, 0.9, vRetention) * uOpacity * vActive;
-        gl_FragColor = vec4(flowColor, alpha);
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-}
-
 function createBioRiskMaterial(pixelRatio: number) {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -2825,7 +2896,7 @@ function createEnsembleSchemeRig(
   simulationMesh.scale.setScalar(1.006);
   simulationMesh.renderOrder = 4;
   group.add(simulationMesh);
-  const fluidMaterial = createFluidRetentionMaterial();
+  const fluidMaterial = createThinFilmFlowMaterial(surface.bounds);
   const fluidMesh = new THREE.Mesh(source, fluidMaterial);
   fluidMesh.renderOrder = 5;
   group.add(fluidMesh);
@@ -2837,8 +2908,6 @@ function createEnsembleSchemeRig(
   group.add(boundaryRig.group);
   const mechanicsRig = createMechanicsFieldRig(surface, source);
   group.add(mechanicsRig.group);
-  const flowRig = createSurfaceFlowRig(surface);
-  group.add(flowRig.group);
   const bioNetworkRig = createBioNetworkRig(surface);
   group.add(bioNetworkRig.group);
   const bioRiskMaterial = createBioRiskMaterial(pixelRatio);
@@ -2847,16 +2916,6 @@ function createEnsembleSchemeRig(
   group.add(bioRiskPoints);
   const fusionRig = createFusionLayerRig(source, 0.42);
   group.add(fusionRig.group);
-  const particleCount = 440;
-  const particleGeometry = new THREE.BufferGeometry();
-  particleGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(particleCount * 3), 3));
-  particleGeometry.setAttribute("aVelocity", new THREE.BufferAttribute(new Float32Array(particleCount), 1));
-  particleGeometry.setAttribute("aRetention", new THREE.BufferAttribute(new Float32Array(particleCount), 1));
-  particleGeometry.setAttribute("aActive", new THREE.BufferAttribute(new Float32Array(particleCount), 1));
-  const particleMaterial = createSurfaceFlowParticleMaterial(pixelRatio);
-  const particlePoints = new THREE.Points(particleGeometry, particleMaterial);
-  particlePoints.renderOrder = 8;
-  group.add(particlePoints);
   group.visible = false;
   return {
     group,
@@ -2869,12 +2928,10 @@ function createEnsembleSchemeRig(
     bioMaterial,
     boundaryRig,
     mechanicsRig,
-    flowRig,
     bioNetworkRig,
     bioRiskMaterial,
     bioRiskPoints,
     fusionRig,
-    particles: { count: particleCount, geometry: particleGeometry, material: particleMaterial, points: particlePoints },
   };
 }
 
@@ -2888,6 +2945,7 @@ function updateEnsembleSchemeRig(
   elapsed: number,
   opacity: number,
   reducedMotion: boolean,
+  selectedSchemeIndex: number,
   focusRegionId?: string,
 ) {
   rig.baseMaterial.opacity = opacity;
@@ -2971,72 +3029,32 @@ function updateEnsembleSchemeRig(
     rig.mechanicsRig.ghostMaterial.opacity = mechanicsActive * loadRamp * 0.06;
   }
 
-  const fluidActive = simulationField === "fluid" ? opacity : 0;
-  const flowBlend = isRecalculation ? [0.82, 1, 0.34][schemeIndex] : 0;
-  rig.flowRig.group.visible = fluidActive > 0.01;
+  const isSelectedScheme = schemeIndex === selectedSchemeIndex;
+  const convergenceFilm = phase === "converge" ? opacity * (isSelectedScheme ? 0.52 : 0.13) : 0;
+  const fluidActive = Math.max(simulationField === "fluid" ? opacity : 0, convergenceFilm);
+  const fluidResponses = [
+    { velocity: 0.94, retention: 0.72, exchange: 0.76 },
+    { velocity: 1.18, retention: 0.48, exchange: 1.18 },
+    { velocity: 0.8, retention: 0.88, exchange: 0.56 },
+  ];
+  const fluidResponse = fluidResponses[schemeIndex];
   rig.fluidMaterial.uniforms.uOpacity.value = fluidActive;
-  rig.fluidMaterial.uniforms.uProgress.value = simulationProgress;
+  rig.fluidMaterial.uniforms.uProgress.value = simulationField === "fluid" ? simulationProgress : 1;
   rig.fluidMaterial.uniforms.uTime.value = elapsed;
-  rig.fluidMaterial.uniforms.uRecalculation.value = isRecalculation ? [0.82, 1.18, 0.22][schemeIndex] : 0;
-  if (fluidActive > 0.01) {
-    const transport = ease(THREE.MathUtils.clamp((simulationProgress - 0.16) / 0.44, 0, 1));
-    const inletReveal = ease(THREE.MathUtils.clamp(simulationProgress / 0.14, 0, 1));
-    rig.flowRig.inlet.scale.setScalar(Math.max(0.001, inletReveal));
-    rig.flowRig.inletMaterials.forEach((material, index) => { material.opacity = fluidActive * inletReveal * (index ? 0.72 : 0.56); });
-    rig.flowRig.paths.forEach((path, pathIndex) => {
-      const attribute = path.line.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const reveal = ease(THREE.MathUtils.clamp(transport * 1.2 - pathIndex * 0.012, 0, 1));
-      path.line.geometry.setDrawRange(0, Math.floor(attribute.count * reveal));
-      path.line.material.opacity = fluidActive * reveal * 0.32;
-      path.ghostLine.material.opacity = fluidActive * flowBlend * 0.08;
-      for (let index = 0; index < attribute.count; index++) {
-        const baseline = path.baseline[index];
-        const candidate = path.candidate[index];
-        attribute.setXYZ(index, THREE.MathUtils.lerp(baseline.x, candidate.x, flowBlend), THREE.MathUtils.lerp(baseline.y, candidate.y, flowBlend), THREE.MathUtils.lerp(baseline.z, candidate.z, flowBlend));
-      }
-      attribute.needsUpdate = true;
-    });
-    rig.flowRig.vortices.forEach((vortex, index) => {
-      const count = vortex.geometry.getAttribute("position").count;
-      const reveal = ease(THREE.MathUtils.clamp((simulationProgress - 0.48) / 0.34 - index * 0.07, 0, 1));
-      vortex.geometry.setDrawRange(0, Math.floor(count * reveal));
-      vortex.material.opacity = fluidActive * reveal * (1 - flowBlend * 0.72) * 0.4;
-    });
-    const position = rig.particles.geometry.getAttribute("position") as THREE.BufferAttribute;
-    const velocity = rig.particles.geometry.getAttribute("aVelocity") as THREE.BufferAttribute;
-    const retention = rig.particles.geometry.getAttribute("aRetention") as THREE.BufferAttribute;
-    const active = rig.particles.geometry.getAttribute("aActive") as THREE.BufferAttribute;
-    const wetFront = ease(THREE.MathUtils.clamp(simulationProgress / 0.32, 0, 1));
-    for (let index = 0; index < rig.particles.count; index++) {
-      const lane = index % rig.flowRig.paths.length;
-      const path = rig.flowRig.paths[lane];
-      const speed = THREE.MathUtils.lerp(0.13 + lane * 0.0015, 0.2 + lane * 0.0018, flowBlend);
-      const cycle = (elapsed * speed + index / rig.particles.count) % 1;
-      const pathPosition = cycle * (path.baseline.length - 1);
-      const lower = Math.floor(pathPosition);
-      const upper = Math.min(path.baseline.length - 1, lower + 1);
-      const localMix = pathPosition - lower;
-      const baseLower = path.baseline[lower];
-      const baseUpper = path.baseline[upper];
-      const candidateLower = path.candidate[lower];
-      const candidateUpper = path.candidate[upper];
-      position.setXYZ(index,
-        THREE.MathUtils.lerp(THREE.MathUtils.lerp(baseLower.x, baseUpper.x, localMix), THREE.MathUtils.lerp(candidateLower.x, candidateUpper.x, localMix), flowBlend),
-        THREE.MathUtils.lerp(THREE.MathUtils.lerp(baseLower.y, baseUpper.y, localMix), THREE.MathUtils.lerp(candidateLower.y, candidateUpper.y, localMix), flowBlend),
-        THREE.MathUtils.lerp(THREE.MathUtils.lerp(baseLower.z, baseUpper.z, localMix), THREE.MathUtils.lerp(candidateLower.z, candidateUpper.z, localMix), flowBlend),
-      );
-      velocity.setX(index, THREE.MathUtils.clamp(speed * 4.4, 0, 1));
-      retention.setX(index, (1 - flowBlend) * Math.exp(-Math.pow((cycle - 0.4) / 0.14, 2)));
-      active.setX(index, cycle <= wetFront + 0.04 ? 1 : 0);
-    }
-    position.needsUpdate = true;
-    velocity.needsUpdate = true;
-    retention.needsUpdate = true;
-    active.needsUpdate = true;
-  }
-  rig.particles.material.uniforms.uOpacity.value = fluidActive;
-  rig.particles.material.uniforms.uRecalculation.value = flowBlend;
-  rig.particles.points.visible = fluidActive > 0.01;
+  configureThinFilmFlowResponse(rig.fluidMaterial, {
+    candidate: isRecalculation || phase === "converge" ? 1 : 0,
+    velocity: fluidResponse.velocity,
+    retention: fluidResponse.retention,
+    exchange: fluidResponse.exchange,
+    stabilize: reducedMotion ? 1 : phase === "converge" ? isSelectedScheme ? 0.42 : 0.92 : 0,
+    motion: reducedMotion ? 0 : phase === "converge" ? isSelectedScheme ? 0.46 : 0 : 1,
+    readability: phase === "converge" ? isSelectedScheme ? 1.34 : 1.16 : 1.28,
+    scheme: schemeIndex,
+  });
+  const wetSurface = THREE.MathUtils.clamp(fluidActive, 0, 1);
+  rig.baseMaterial.roughness = THREE.MathUtils.lerp(0.34, 0.2, wetSurface);
+  rig.baseMaterial.clearcoat = THREE.MathUtils.lerp(0.44, 0.72, wetSurface);
+  rig.baseMaterial.clearcoatRoughness = THREE.MathUtils.lerp(0.22, 0.1, wetSurface);
 
   const bioActive = simulationField === "bio" ? opacity : 0;
   rig.bioRiskPoints.visible = bioActive > 0.01;
@@ -3199,7 +3217,7 @@ export function DentalScene({
       blending: THREE.NormalBlending,
     });
     const simulationMaterial = createSimulationFieldMaterial();
-    const fluidRetentionMaterial = createFluidRetentionMaterial();
+    const fluidRetentionMaterial = createThinFilmFlowMaterial();
     const bioFilmMaterial = createBioFilmMaterial();
     let simulationOpacity = 0;
     let mechanicsOpacity = 0;
@@ -3419,35 +3437,14 @@ export function DentalScene({
 
     const defectMaterial = new THREE.PointsMaterial({ color: 0xff6a43, size: 0.058, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
     let defectPoints: THREE.Points | null = null;
-    const particleCount = 1100;
-    const particleGeometry = new THREE.BufferGeometry();
-    particleGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(particleCount * 3), 3));
-    particleGeometry.setAttribute("aVelocity", new THREE.BufferAttribute(new Float32Array(particleCount), 1));
-    particleGeometry.setAttribute("aRetention", new THREE.BufferAttribute(new Float32Array(particleCount), 1));
-    particleGeometry.setAttribute("aActive", new THREE.BufferAttribute(new Float32Array(particleCount), 1));
-    const particleMaterial = createSurfaceFlowParticleMaterial(renderer.getPixelRatio());
-    const particles = new THREE.Points(particleGeometry, particleMaterial);
-    modelGroup.add(particles);
-    const flowStreakGeometry = new THREE.BufferGeometry();
-    flowStreakGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(particleCount * 2 * 3), 3));
-    const flowStreakMaterial = new THREE.LineBasicMaterial({ color: 0xb4f8ea, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
-    const flowStreaks = new THREE.LineSegments(flowStreakGeometry, flowStreakMaterial);
-    modelGroup.add(flowStreaks);
-    const flowCurrent = new THREE.Vector3();
-    const flowPrevious = new THREE.Vector3();
-    const flowTangent = new THREE.Vector3();
-    const flowVortexCurrent = new THREE.Vector3();
-    const flowVortexPrevious = new THREE.Vector3();
     const bioDummy = new THREE.Object3D();
     const bioApproachPosition = new THREE.Vector3();
     const bioYAxis = new THREE.Vector3(0, 1, 0);
     let simulationBoundaryRig: SimulationBoundaryRig | null = null;
     let mechanicsFieldRig: MechanicsFieldRig | null = null;
-    let surfaceFlowRig: SurfaceFlowRig | null = null;
     let bioNetworkRig: BioNetworkRig | null = null;
     let bioEntityRig: BioEntityRig | null = null;
     let fusionLayerRig: FusionLayerRig | null = null;
-    let surfaceFlowBlend = 0;
     let fusionLayerOpacity = 0;
     const bioRiskMaterial = createBioRiskMaterial(renderer.getPixelRatio());
     let bioRiskPoints: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial> | null = null;
@@ -3592,6 +3589,7 @@ export function DentalScene({
         geometry.setAttribute("aFieldOrder", new THREE.BufferAttribute(fieldOrder, 1));
         reconstructionLightWaveMaterial.uniforms.uBoundsMin.value.copy(bounds.min);
         reconstructionLightWaveMaterial.uniforms.uBoundsSize.value.copy(size);
+        configureThinFilmFlowBounds(fluidRetentionMaterial, bounds);
 
         modelGroup.add(new THREE.Mesh(geometry, baseMaterial));
         const lightWaveMesh = new THREE.Mesh(geometry, reconstructionLightWaveMaterial);
@@ -3615,8 +3613,6 @@ export function DentalScene({
         modelGroup.add(simulationBoundaryRig.group);
         mechanicsFieldRig = createMechanicsFieldRig(regionalProjectionIndex, geometry);
         modelGroup.add(mechanicsFieldRig.group);
-        surfaceFlowRig = createSurfaceFlowRig(regionalProjectionIndex);
-        modelGroup.add(surfaceFlowRig.group);
         bioNetworkRig = createBioNetworkRig(regionalProjectionIndex);
         modelGroup.add(bioNetworkRig.group);
         bioEntityRig = createBioEntityRig(geometry);
@@ -3904,6 +3900,7 @@ export function DentalScene({
             elapsed,
             schemeOpacity,
             reducedMotion,
+            visual.selectedSchemeIndex,
             visual.focusRegionId,
           );
         });
@@ -4091,60 +4088,19 @@ export function DentalScene({
         ? Number(visual.simulationField === "fluid")
         : THREE.MathUtils.damp(surfaceFlowOpacity, visual.simulationField === "fluid" ? 1 : 0, 4.8, delta);
       const fluidActivity = surfaceFlowOpacity;
-      surfaceFlowBlend = reducedMotion
-        ? Number(visual.phase === "recalculate")
-        : THREE.MathUtils.damp(surfaceFlowBlend, visual.phase === "recalculate" ? 1 : 0, 3.8, delta);
-      if (surfaceFlowRig) {
-        surfaceFlowRig.group.visible = fluidActivity > 0.01;
-        const fluidProgress = visual.simulationField === "fluid" ? visual.simulationProgress : 1;
-        const inletReveal = ease(THREE.MathUtils.clamp(fluidProgress / 0.13, 0, 1));
-        surfaceFlowRig.inlet.scale.setScalar(Math.max(0.001, inletReveal));
-        surfaceFlowRig.inlet.rotation.z = reducedMotion ? 0 : Math.sin(elapsed * 0.7) * 0.006;
-        surfaceFlowRig.inletMaterials.forEach((material, index) => {
-          material.opacity = fluidActivity * inletReveal * (index === 0 ? 0.62 : 0.78);
-        });
-        const transportProgress = ease(THREE.MathUtils.clamp((fluidProgress - 0.18) / 0.42, 0, 1));
-        surfaceFlowRig.paths.forEach((path, pathIndex) => {
-          const pathCount = path.line.geometry.getAttribute("position").count;
-          const laneProgress = ease(THREE.MathUtils.clamp(transportProgress * 1.22 - pathIndex * 0.018, 0, 1));
-          path.line.geometry.setDrawRange(0, Math.floor(pathCount * laneProgress));
-          path.line.material.opacity = fluidActivity * laneProgress * (pathIndex % 2 ? 0.24 : 0.38);
-          path.line.material.color.setHex(visual.phase === "recalculate"
-            ? pathIndex % 2 ? 0x9ff3e3 : 0xd5fff6
-            : pathIndex % 2 ? 0x83d6c5 : 0xb8f8ea);
-          path.ghostLine.material.opacity = fluidActivity * surfaceFlowBlend * transportProgress * (pathIndex % 2 ? 0.07 : 0.12);
-          if (fluidActivity <= 0.01) return;
-          const attribute = path.line.geometry.getAttribute("position") as THREE.BufferAttribute;
-          for (let index = 0; index < attribute.count; index++) {
-            const baselinePoint = path.baseline[index];
-            const candidatePoint = path.candidate[index];
-            attribute.setXYZ(
-              index,
-              THREE.MathUtils.lerp(baselinePoint.x, candidatePoint.x, surfaceFlowBlend),
-              THREE.MathUtils.lerp(baselinePoint.y, candidatePoint.y, surfaceFlowBlend),
-              THREE.MathUtils.lerp(baselinePoint.z, candidatePoint.z, surfaceFlowBlend),
-            );
-          }
-          attribute.needsUpdate = true;
-        });
-        surfaceFlowRig.vortices.forEach((vortex, vortexIndex) => {
-          const count = vortex.geometry.getAttribute("position").count;
-          const reveal = ease(THREE.MathUtils.clamp((fluidProgress - 0.5) / 0.3 * 1.18 - vortexIndex * 0.12, 0, 1));
-          vortex.geometry.setDrawRange(0, Math.floor(count * reveal));
-          vortex.material.opacity = fluidActivity
-            * (1 - surfaceFlowBlend * 0.76)
-            * (0.4 + Math.sin(elapsed * 1.7 + vortexIndex * 1.6) * 0.09);
-          vortex.rotation.z = reducedMotion ? 0 : Math.sin(elapsed * 0.55 + vortexIndex) * 0.015;
-        });
-        const fluxCount = surfaceFlowRig.exchangeFlux.geometry.getAttribute("position").count;
-        const exchangeProgress = ease(THREE.MathUtils.clamp((fluidProgress - 0.68) / 0.25, 0, 1));
-        surfaceFlowRig.exchangeFlux.geometry.setDrawRange(0, Math.floor(fluxCount * exchangeProgress / 2) * 2);
-        surfaceFlowRig.exchangeFlux.material.opacity = fluidActivity * exchangeProgress * (visual.phase === "recalculate" ? 0.48 : 0.3);
-      }
       fluidRetentionMaterial.uniforms.uOpacity.value = fluidActivity;
       fluidRetentionMaterial.uniforms.uProgress.value = visual.simulationField === "fluid" ? visual.simulationProgress : 1;
       fluidRetentionMaterial.uniforms.uTime.value = elapsed;
-      fluidRetentionMaterial.uniforms.uRecalculation.value = visual.phase === "recalculate" ? 1 : 0;
+      configureThinFilmFlowResponse(fluidRetentionMaterial, {
+        candidate: visual.phase === "recalculate" ? 1 : 0,
+        velocity: visual.phase === "recalculate" ? 1.02 : 0.82,
+        retention: visual.phase === "recalculate" ? 0.66 : 1,
+        exchange: visual.phase === "recalculate" ? 0.9 : 0.42,
+        stabilize: reducedMotion ? 1 : 0,
+        motion: reducedMotion ? 0 : 1,
+        readability: 1.05,
+        scheme: 0,
+      });
       bioRiskOpacity = reducedMotion
         ? Number(visual.simulationField === "bio")
         : THREE.MathUtils.damp(bioRiskOpacity, visual.simulationField === "bio" ? 1 : 0, 4.5, delta);
@@ -4223,10 +4179,6 @@ export function DentalScene({
         ? state.heat * (1 - ease(visual.stageProgress)) * 0.62
         : state.heat * 0.9;
       defectMaterial.opacity = state.defects * (0.55 + Math.sin(elapsed * 5.2) * 0.25);
-      const fluidTransportOpacity = fluidActivity * ease(THREE.MathUtils.clamp((visual.simulationProgress - 0.18) / 0.24, 0, 1));
-      particleMaterial.uniforms.uOpacity.value = Math.max(state.flow * 0.42, fluidTransportOpacity);
-      particleMaterial.uniforms.uRecalculation.value = visual.phase === "recalculate" ? 1 : 0;
-      flowStreakMaterial.opacity = fluidTransportOpacity * 0.52;
       scanCoreMaterial.opacity = state.scan * 0.065;
       scanVolumeMaterial.opacity = state.scan * 0.022;
       gridMaterials.forEach((material) => { material.opacity = state.scan * 0.06; });
@@ -4275,8 +4227,10 @@ export function DentalScene({
         ? new THREE.Color(0xf1f6f0)
         : fluidActivity > 0.08 ? new THREE.Color(0xb9c5c0) : new THREE.Color(0xdce3dc);
       baseMaterial.color.lerp(baseTarget, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.2));
-      const targetRoughness = fluidActivity > 0.08 ? 0.43 : targets.scan > 0.2 ? 0.48 : 0.31;
+      const targetRoughness = fluidActivity > 0.08 ? 0.21 : targets.scan > 0.2 ? 0.48 : 0.31;
       baseMaterial.roughness = THREE.MathUtils.damp(baseMaterial.roughness, targetRoughness, 3.2, delta);
+      baseMaterial.clearcoat = THREE.MathUtils.damp(baseMaterial.clearcoat, fluidActivity > 0.08 ? 0.74 : 0.42, 3.2, delta);
+      baseMaterial.clearcoatRoughness = THREE.MathUtils.damp(baseMaterial.clearcoatRoughness, fluidActivity > 0.08 ? 0.1 : 0.22, 3.2, delta);
 
       const focusRotations = [0, 0, Math.PI, Math.PI * 0.5, -Math.PI * 0.5];
       const focusTilts = [0.82, -0.12, -0.12, -0.12, -0.12];
@@ -4327,77 +4281,6 @@ export function DentalScene({
             lastSchemeLabelX[schemeIndex] = projectedX;
           }
         });
-      }
-
-      if (fluidActivity > 0.01 && surfaceFlowRig?.paths.length) {
-        const attribute = particleGeometry.getAttribute("position") as THREE.BufferAttribute;
-        const velocityAttribute = particleGeometry.getAttribute("aVelocity") as THREE.BufferAttribute;
-        const retentionAttribute = particleGeometry.getAttribute("aRetention") as THREE.BufferAttribute;
-        const activeAttribute = particleGeometry.getAttribute("aActive") as THREE.BufferAttribute;
-        const streakAttribute = flowStreakGeometry.getAttribute("position") as THREE.BufferAttribute;
-        const particleWetFront = ease(THREE.MathUtils.clamp(visual.simulationProgress / 0.32, 0, 1));
-        for (let index = 0; index < particleCount; index++) {
-          const lane = index % surfaceFlowRig.paths.length;
-          const path = surfaceFlowRig.paths[lane];
-          const speed = THREE.MathUtils.lerp(0.12 + lane * 0.004, 0.18 + lane * 0.005, surfaceFlowBlend);
-          const rawCycle = (elapsed * speed + index / particleCount) % 1;
-          const retentionStrength = (1 - surfaceFlowBlend) * Math.exp(-Math.pow((rawCycle - 0.4) / 0.13, 2));
-          const retentionDelay = retentionStrength * 0.075;
-          const cycle = THREE.MathUtils.clamp(rawCycle - retentionDelay, 0, 1);
-          const pathPosition = cycle * (path.baseline.length - 1);
-          const lower = Math.floor(pathPosition);
-          const upper = Math.min(path.baseline.length - 1, lower + 1);
-          const localMix = pathPosition - lower;
-          const baselineLower = path.baseline[lower];
-          const baselineUpper = path.baseline[upper];
-          const candidateLower = path.candidate[lower];
-          const candidateUpper = path.candidate[upper];
-          const baselineX = THREE.MathUtils.lerp(baselineLower.x, baselineUpper.x, localMix);
-          const baselineY = THREE.MathUtils.lerp(baselineLower.y, baselineUpper.y, localMix);
-          const baselineZ = THREE.MathUtils.lerp(baselineLower.z, baselineUpper.z, localMix);
-          const candidateX = THREE.MathUtils.lerp(candidateLower.x, candidateUpper.x, localMix);
-          const candidateY = THREE.MathUtils.lerp(candidateLower.y, candidateUpper.y, localMix);
-          const candidateZ = THREE.MathUtils.lerp(candidateLower.z, candidateUpper.z, localMix);
-          flowCurrent.set(
-            THREE.MathUtils.lerp(baselineX, candidateX, surfaceFlowBlend),
-            THREE.MathUtils.lerp(baselineY, candidateY, surfaceFlowBlend),
-            THREE.MathUtils.lerp(baselineZ, candidateZ, surfaceFlowBlend),
-          );
-          flowPrevious.set(
-            THREE.MathUtils.lerp(baselineLower.x, candidateLower.x, surfaceFlowBlend),
-            THREE.MathUtils.lerp(baselineLower.y, candidateLower.y, surfaceFlowBlend),
-            THREE.MathUtils.lerp(baselineLower.z, candidateLower.z, surfaceFlowBlend),
-          );
-          if (retentionStrength > 0.18 && index % 7 < 2 && surfaceFlowRig.vortices.length) {
-            const vortex = surfaceFlowRig.vortices[index % surfaceFlowRig.vortices.length];
-            const vortexAttribute = vortex.geometry.getAttribute("position") as THREE.BufferAttribute;
-            const vortexIndex = Math.floor(((elapsed * 0.13 + index * 0.071) % 1) * vortexAttribute.count);
-            const previousVortexIndex = (vortexIndex - 1 + vortexAttribute.count) % vortexAttribute.count;
-            flowVortexCurrent.set(vortexAttribute.getX(vortexIndex), vortexAttribute.getY(vortexIndex), vortexAttribute.getZ(vortexIndex));
-            flowVortexPrevious.set(vortexAttribute.getX(previousVortexIndex), vortexAttribute.getY(previousVortexIndex), vortexAttribute.getZ(previousVortexIndex));
-            flowCurrent.lerp(flowVortexCurrent, Math.min(0.86, retentionStrength * 0.92));
-            flowPrevious.lerp(flowVortexPrevious, Math.min(0.86, retentionStrength * 0.92));
-          }
-          attribute.setXYZ(index, flowCurrent.x, flowCurrent.y, flowCurrent.z);
-          const velocity = THREE.MathUtils.clamp((speed - 0.11) / 0.12 * (1 - retentionStrength * 0.7), 0.08, 1);
-          velocityAttribute.setX(index, velocity);
-          retentionAttribute.setX(index, retentionStrength);
-          const particleActive = cycle <= particleWetFront + 0.04 ? 1 : 0;
-          activeAttribute.setX(index, particleActive);
-          flowTangent.copy(flowCurrent).sub(flowPrevious).normalize().multiplyScalar(0.008 + velocity * 0.027);
-          streakAttribute.setXYZ(
-            index * 2,
-            flowCurrent.x - flowTangent.x * particleActive,
-            flowCurrent.y - flowTangent.y * particleActive,
-            flowCurrent.z - flowTangent.z * particleActive,
-          );
-          streakAttribute.setXYZ(index * 2 + 1, flowCurrent.x, flowCurrent.y, flowCurrent.z);
-        }
-        attribute.needsUpdate = true;
-        velocityAttribute.needsUpdate = true;
-        retentionAttribute.needsUpdate = true;
-        activeAttribute.needsUpdate = true;
-        streakAttribute.needsUpdate = true;
       }
 
       renderer.render(scene, camera);
@@ -4461,10 +4344,8 @@ export function DentalScene({
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       pointMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
-      particleMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
       bioRiskMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
       ensembleRigs.forEach((rig) => {
-        rig.particles.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
         rig.bioRiskMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
       });
     };
@@ -4500,7 +4381,7 @@ export function DentalScene({
           });
         }
       });
-      [baseMaterial, heatMaterial, simulationMaterial, fluidRetentionMaterial, bioFilmMaterial, bioRiskMaterial, revealMaterial, pointMaterial, normalMaterial, repairMaterial, reconstructionLightWaveMaterial, defectMaterial, particleMaterial, scanCoreMaterial, scanVolumeMaterial, emitterMaterial, ...textureMaterials].forEach((material) => {
+      [baseMaterial, heatMaterial, simulationMaterial, fluidRetentionMaterial, bioFilmMaterial, bioRiskMaterial, revealMaterial, pointMaterial, normalMaterial, repairMaterial, reconstructionLightWaveMaterial, defectMaterial, scanCoreMaterial, scanVolumeMaterial, emitterMaterial, ...textureMaterials].forEach((material) => {
         if (!disposedMaterials.has(material)) material.dispose();
       });
       geometryRigCache.forEach((rig) => {
