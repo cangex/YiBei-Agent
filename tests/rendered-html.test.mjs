@@ -26,6 +26,7 @@ test("server-renders the finished Yibei brand homepage", async () => {
   assert.match(html, /以微纳织构技术，/);
   assert.match(html, /探寻智能义齿/);
   assert.match(html, /未来式/);
+  assert.match(html, /src="\/brand\/yibei-medical-logo\.png"/);
   assert.match(html, /href="\/reconstruction"/);
   assert.match(html, /href="\/twin-ai"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);
@@ -37,6 +38,8 @@ test("homepage uses a crown-dominant square molar instead of the product demo ST
     readFile(new URL("../app/components/HeroToothScene.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(homepage, /HeroToothScene/);
+  assert.match(homepage, /home-brand-logo/);
+  assert.doesNotMatch(homepage, /className="brand-mark"/);
   assert.doesNotMatch(homepage, /DentalScene|demo\.stl/);
   assert.match(heroScene, /STLLoader/);
   assert.match(heroScene, /standard-molar\.stl/);
@@ -58,10 +61,39 @@ test("server-renders both product routes with independent metadata", async () =>
   assert.match(reconstruction, /<title>义齿三维轮廓超精准重建智能体｜益贝医疗智能体<\/title>/);
   assert.match(reconstruction, /启动超精准重建/);
   assert.match(reconstruction, /读取三角网格与空间边界/);
+  assert.match(reconstruction, /src="\/brand\/yibei-medical-logo\.png"/);
+  assert.doesNotMatch(reconstruction, /DETERMINISTIC DEMO|参数为前端确定性演示评估/);
+  assert.doesNotMatch(reconstruction, /任意STL网格|几何特征场与确定性重建演示|连续、可设计的义齿表面/);
   assert.match(twin, /<title>双微AI设计智能体及验证平台｜益贝医疗智能体<\/title>/);
   assert.match(twin, /启动双微AI设计/);
   assert.match(twin, /五区均衡方案/);
   assert.match(twin, /不雕刻/);
+  assert.doesNotMatch(twin, /yibei-medical-logo\.png/);
+});
+
+test("ships the reconstruction brand logo as a transparent page asset", async () => {
+  const [logo, nav, reconstruction, styles] = await Promise.all([
+    stat(new URL("../public/brand/yibei-medical-logo.png", import.meta.url)),
+    readFile(new URL("../app/components/ProductNav.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ReconstructionExperience.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.ok(logo.size > 50_000);
+  assert.match(nav, /brandVariant/);
+  assert.match(nav, /product-brand-logo/);
+  assert.match(reconstruction, /brandVariant="reconstruction"/);
+  assert.match(reconstruction, /visualPalette="brand-cyan"/);
+  assert.match(reconstruction, /processing-caption-heading/);
+  assert.match(reconstruction, /steps\[activeStep\]\.titleEn/);
+  assert.match(styles, /--signal: #24b7c7/);
+  assert.match(styles, /\.processing-caption-heading b/);
+  assert.match(styles, /--product-bg: #f5fbfc/);
+  assert.match(styles, /--product-muted: #55767b/);
+  assert.match(styles, /\.process-step \{[^}]*opacity: 1/);
+  assert.match(styles, /\.reconstruction-page \.step-title-row strong \{ color: #365e64/);
+  assert.match(styles, /Reconstruction brand theme: medical white \+ logo cyan/);
+  assert.match(styles, /linear-gradient\(145deg, #12a8ba 0%, #24b7c7 48%, #43c7d2 100%\)/);
+  assert.match(styles, /\.product-brand-logo/);
 });
 
 test("ships the real STL demonstration model", async () => {
@@ -201,6 +233,15 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.match(scene, /focusRegionId/);
   assert.match(scene, /13_062 \/ pitchUm/);
   assert.match(scene, /reconstructionLightWave/);
+  assert.match(scene, /showScannerOverlay/);
+  assert.match(scene, /comparisonAppearance/);
+  assert.match(scene, /reconstructionMaterialProgress/);
+  assert.match(scene, /createReconstructionSurfaceMaterial/);
+  assert.match(scene, /uRepairProgress/);
+  assert.match(scene, /repairSweepActive/);
+  assert.match(scene, /RECONSTRUCTION_BEFORE_SURFACE/);
+  assert.match(scene, /uVitality/);
+  assert.match(scene, /visual\.showScannerOverlay && state\.scan > 0\.01/);
   assert.match(scene, /reconstructionLightWaveMaterial/);
   assert.match(scene, /uWavePosition/);
   assert.match(scene, /curvedCoordinate/);
@@ -214,6 +255,28 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.doesNotMatch(scene, /makePatternTexture/);
   assert.match(reconstruction, /stageProgress/);
   assert.match(reconstruction, /reconstructionLightWave/);
+  assert.match(reconstruction, /SYNCHRONIZED COMPARISON/);
+  assert.match(reconstruction, /comparison-model-before/);
+  assert.match(reconstruction, /comparison-model-after/);
+  assert.match(reconstruction, /comparisonMetrics/);
+  assert.match(reconstruction, /synchronizedPose/);
+  assert.match(reconstruction, /showScannerOverlay=\{false\}/);
+  assert.match(reconstruction, /comparisonAppearance="before"/);
+  assert.match(reconstruction, /comparisonAppearance="after"/);
+  assert.match(reconstruction, /reconstructionMaterialProgress=\{!running \|\| activeStep <= 2 \? 0 : activeStep === 3 \? stageProgress : 1\}/);
+  assert.match(reconstruction, /mode="porcelain"[\s\S]*phase="idle"[\s\S]*comparisonAppearance="before"/);
+  assert.doesNotMatch(reconstruction, /参数为前端确定性演示评估|reconstruction-footnote/);
+  assert.doesNotMatch(reconstruction, /异常轮廓与误差场保留/);
+  assert.doesNotMatch(reconstruction, /连续表面与灵动光波验证/);
+  assert.match(reconstruction, /titleEn: "MESH PARSING"/);
+  assert.match(reconstruction, /noteEn: "READ TRIANGLE MESH AND SPATIAL BOUNDS"/);
+  assert.match(reconstruction, /step-title-row/);
+  assert.match(reconstruction, /step-note-en/);
+  assert.match(reconstruction, /reconstruction-intro-action/);
+  assert.match(reconstruction, /智能体运行中 ·/);
+  assert.doesNotMatch(reconstruction, /以真实STL为入口，将网格解析/);
+  assert.match(reconstruction, /让每一处缺失的轮廓，<em>重新连续。<\/em>/);
+  assert.doesNotMatch(reconstruction, /让每一处缺失的轮廓，<br \/>/);
   assert.doesNotMatch(reconstruction, /LOCAL PATCH SYNTHESIS|同位轮廓剖分校验|珍珠陶瓷表面/);
   assert.match(reconstruction, /stepDurations/);
   assert.match(twin, /phaseProgress/);
@@ -256,6 +319,14 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.doesNotMatch(twin, /六边贯通型|波浪四边型|梯度三边型/);
   assert.match(styles, /stage-transition-veil/);
   assert.match(styles, /stage-bridge/);
+  assert.match(styles, /reconstruction-comparison/);
+  assert.match(styles, /comparison-metrics/);
+  assert.match(styles, /comparison-metric-arrow-head/);
+  assert.match(styles, /processing-progress i::after/);
+  assert.match(styles, /width: min\(660px, calc\(100% - 150px\)\)/);
+  assert.match(styles, /process-step\.is-active \.step-title-row strong/);
+  assert.match(styles, /process-step\.is-active \.step-note-en/);
+  assert.match(styles, /reconstruction-intro-action/);
   assert.match(styles, /modeling-path-solve/);
   assert.match(styles, /region-color-legend/);
   assert.match(styles, /surface-region-inspector/);

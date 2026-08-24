@@ -54,6 +54,7 @@ export type RegionalTextureRegion = {
 };
 
 export type SimulationField = "none" | "mechanics" | "fluid" | "bio" | "fusion";
+export type ReconstructionComparisonAppearance = "default" | "before" | "after";
 
 export type MicrotextureVisualKey =
   | "topology-3"
@@ -108,7 +109,12 @@ type Props = {
   focusRegionId?: string;
   simulationField?: SimulationField;
   simulationProgress?: number;
+  visualPalette?: "default" | "brand-cyan";
   reconstructionLightWave?: boolean;
+  reconstructionMaterialProgress?: number;
+  comparisonAppearance?: ReconstructionComparisonAppearance;
+  showScannerOverlay?: boolean;
+  synchronizedPose?: boolean;
   interactive?: boolean;
   className?: string;
   onLoaded?: (meta: { triangles: number; dimensions: [number, number, number] }) => void;
@@ -227,10 +233,72 @@ type EnsembleSchemeRig = {
 const AQUA = new THREE.Color(0x83d6c5);
 const AQUA_PALE = new THREE.Color(0xd9fff5);
 const SIGNAL = new THREE.Color(0xff6a43);
+const BRAND_CYAN = new THREE.Color(0x24b7c7);
+const BRAND_CYAN_SOFT = new THREE.Color(0x79e6ee);
+const BRAND_CYAN_PALE = new THREE.Color(0xe8fcff);
+const RECONSTRUCTION_BEFORE_SURFACE = new THREE.Color(0x7b8580);
+const RECONSTRUCTION_BEFORE_LIGHT = new THREE.Color(0x9ba8a2);
+const RECONSTRUCTION_BEFORE_RIM = new THREE.Color(0x5e716b);
+const RECONSTRUCTION_AFTER_ENTRY = new THREE.Color(0xaebbb5);
+const RECONSTRUCTION_AFTER_SURFACE = new THREE.Color(0xf4faf6);
+const RECONSTRUCTION_STANDARD_LIGHT = new THREE.Color(0xffffff);
 
 function ease(value: number) {
   const x = THREE.MathUtils.clamp(value, 0, 1);
   return x * x * (3 - 2 * x);
+}
+
+function createReconstructionSurfaceMaterial() {
+  const uniforms = {
+    uRepairProgress: { value: 0 },
+    uRepairTime: { value: 0 },
+    uBoundsMin: { value: new THREE.Vector3(-1, -1, -1) },
+    uBoundsSize: { value: new THREE.Vector3(2, 2, 2) },
+  };
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0xf4faf6,
+    roughness: 0.18,
+    metalness: 0.015,
+    clearcoat: 0.88,
+    clearcoatRoughness: 0.075,
+    transparent: true,
+    opacity: 1,
+    depthWrite: false,
+  });
+  material.name = "reconstruction-surface-reveal";
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `
+        #include <common>
+        uniform vec3 uBoundsMin;
+        uniform vec3 uBoundsSize;
+        varying vec3 vRepairNormalized;
+      `)
+      .replace("#include <begin_vertex>", `
+        #include <begin_vertex>
+        vRepairNormalized = (transformed - uBoundsMin) / max(uBoundsSize, vec3(0.0001));
+      `);
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `
+        #include <common>
+        uniform float uRepairProgress;
+        uniform float uRepairTime;
+        varying vec3 vRepairNormalized;
+      `)
+      .replace("#include <color_fragment>", `
+        #include <color_fragment>
+        float repairCurve = vRepairNormalized.y
+          + sin(vRepairNormalized.x * 6.283 + uRepairTime * 0.11) * 0.034
+          + sin(vRepairNormalized.z * 8.4 - uRepairTime * 0.08) * 0.022;
+        float repairFront = mix(-0.16, 1.18, smoothstep(0.0, 1.0, uRepairProgress));
+        float repairedReveal = 1.0 - smoothstep(repairFront - 0.052, repairFront + 0.024, repairCurve);
+        diffuseColor.a *= repairedReveal;
+        if (diffuseColor.a < 0.004) discard;
+      `);
+  };
+  material.customProgramCacheKey = () => "reconstruction-surface-reveal-v1";
+  return { material, uniforms };
 }
 
 function createRegionalTextureMaterial() {
@@ -3123,24 +3191,43 @@ export function DentalScene({
   focusRegionId,
   simulationField = "none",
   simulationProgress = 0,
+  visualPalette = "default",
   reconstructionLightWave = false,
+  reconstructionMaterialProgress,
+  comparisonAppearance = "default",
+  showScannerOverlay = true,
+  synchronizedPose = false,
   interactive = true,
   className,
   onLoaded,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const loadedRef = useRef(onLoaded);
-  const visualRef = useRef({ mode, phase, stageProgress, textureSides, wave, regionalTextures, parallelSchemes, selectedSchemeIndex, focusRegionId, simulationField, simulationProgress, interactive });
+  const visualRef = useRef({ mode, phase, stageProgress, textureSides, wave, regionalTextures, parallelSchemes, selectedSchemeIndex, focusRegionId, simulationField, simulationProgress, reconstructionMaterialProgress, comparisonAppearance, showScannerOverlay, synchronizedPose, interactive });
 
   useEffect(() => { loadedRef.current = onLoaded; }, [onLoaded]);
   useEffect(() => {
-    visualRef.current = { mode, phase, stageProgress, textureSides, wave, regionalTextures, parallelSchemes, selectedSchemeIndex, focusRegionId, simulationField, simulationProgress, interactive };
-  }, [mode, phase, stageProgress, textureSides, wave, regionalTextures, parallelSchemes, selectedSchemeIndex, focusRegionId, simulationField, simulationProgress, interactive]);
+    visualRef.current = { mode, phase, stageProgress, textureSides, wave, regionalTextures, parallelSchemes, selectedSchemeIndex, focusRegionId, simulationField, simulationProgress, reconstructionMaterialProgress, comparisonAppearance, showScannerOverlay, synchronizedPose, interactive };
+  }, [mode, phase, stageProgress, textureSides, wave, regionalTextures, parallelSchemes, selectedSchemeIndex, focusRegionId, simulationField, simulationProgress, reconstructionMaterialProgress, comparisonAppearance, showScannerOverlay, synchronizedPose, interactive]);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const initialComparisonAppearance = visualRef.current.comparisonAppearance;
+    const initialWorkflowActive = visualRef.current.reconstructionMaterialProgress !== undefined;
+    const initialWorkflowProgress = THREE.MathUtils.clamp(visualRef.current.reconstructionMaterialProgress ?? 0, 0, 1);
+    const initialWorkflowEase = ease(initialWorkflowProgress);
+    const initialComparisonBefore = initialComparisonAppearance === "before" || initialWorkflowActive;
+    const initialComparisonAfter = initialComparisonAppearance === "after";
+    const brandCyanPalette = visualPalette === "brand-cyan";
+    const paletteAqua = brandCyanPalette ? BRAND_CYAN : AQUA;
+    const paletteSoft = brandCyanPalette ? BRAND_CYAN_SOFT : SIGNAL;
+    const palettePale = brandCyanPalette ? BRAND_CYAN_PALE : AQUA_PALE;
+    const paletteScanner = brandCyanPalette ? BRAND_CYAN_PALE : paletteAqua;
+    const paletteRim = brandCyanPalette ? BRAND_CYAN_SOFT : paletteAqua;
+    const paletteWave = brandCyanPalette ? BRAND_CYAN_SOFT : paletteAqua;
+    const paletteBeforeRim = brandCyanPalette ? new THREE.Color(0x45666b) : RECONSTRUCTION_BEFORE_RIM;
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100);
     camera.position.set(0.15, 0.25, 6.6);
@@ -3148,7 +3235,7 @@ export function DentalScene({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.12;
+    renderer.toneMappingExposure = initialWorkflowActive ? THREE.MathUtils.lerp(0.82, 1.12, initialWorkflowEase) : initialComparisonBefore ? 0.82 : initialComparisonAfter ? 1.25 : 1.12;
     mount.appendChild(renderer.domElement);
     mount.dataset.modelState = "loading";
 
@@ -3159,11 +3246,12 @@ export function DentalScene({
     controls.maxDistance = 9;
     controls.autoRotateSpeed = 0.32;
 
-    scene.add(new THREE.HemisphereLight(0xf5fff9, 0x31423d, 2.4));
-    const key = new THREE.DirectionalLight(0xffffff, 5.2);
+    const hemisphere = new THREE.HemisphereLight(0xf5fff9, 0x31423d, initialWorkflowActive ? THREE.MathUtils.lerp(1.18, 2.4, initialWorkflowEase) : initialComparisonBefore ? 1.18 : initialComparisonAfter ? 2.75 : 2.4);
+    scene.add(hemisphere);
+    const key = new THREE.DirectionalLight(initialComparisonBefore ? 0x9ba8a2 : 0xffffff, initialWorkflowActive ? THREE.MathUtils.lerp(2.6, 5.2, initialWorkflowEase) : initialComparisonBefore ? 2.6 : initialComparisonAfter ? 6.25 : 5.2);
     key.position.set(-3, 5, 5);
     scene.add(key);
-    const rim = new THREE.DirectionalLight(0x83d6c5, 3.5);
+    const rim = new THREE.DirectionalLight(initialComparisonBefore ? paletteBeforeRim : paletteRim, initialWorkflowActive ? THREE.MathUtils.lerp(0.8, 3.5, initialWorkflowEase) : initialComparisonBefore ? 0.8 : initialComparisonAfter ? 5.15 : 3.5);
     rim.position.set(4, -1, 3);
     scene.add(rim);
 
@@ -3196,17 +3284,21 @@ export function DentalScene({
     let profile: SliceSample[] = [];
     let scanY = -1;
     let readyEnteredAt: number | null = null;
+    const comparisonBaseTarget = new THREE.Color();
+    const workflowKeyTarget = new THREE.Color();
+    const workflowRimTarget = new THREE.Color();
     const state: VisualState = { scan: 0, heat: 0, texture: 0, flow: 0, repair: 0, defects: 0 };
     // 保留旧管状路径作为兼容实现，真正可见的微织构由贴合 STL 的高密度曲面网格承载。
     const enableMacroMicroGeometry = false;
 
     const baseMaterial = new THREE.MeshPhysicalMaterial({
-      color: 0xdce3dc,
-      roughness: 0.31,
+      color: initialComparisonBefore ? 0x7b8580 : initialComparisonAfter ? 0xaebbb5 : 0xdce3dc,
+      roughness: initialComparisonBefore ? 0.72 : initialComparisonAfter ? 0.18 : 0.31,
       metalness: 0.02,
-      clearcoat: 0.42,
-      clearcoatRoughness: 0.22,
+      clearcoat: initialComparisonBefore ? 0.06 : initialComparisonAfter ? 0.88 : 0.42,
+      clearcoatRoughness: initialComparisonBefore ? 0.68 : initialComparisonAfter ? 0.075 : 0.22,
     });
+    const { material: reconstructionSurfaceMaterial, uniforms: reconstructionSurfaceUniforms } = createReconstructionSurfaceMaterial();
     const heatMaterial = new THREE.MeshStandardMaterial({
       vertexColors: true,
       roughness: 0.48,
@@ -3246,7 +3338,7 @@ export function DentalScene({
     const planPrebuildTimers: number[] = [];
 
     const revealMaterial = new THREE.ShaderMaterial({
-      uniforms: { uScanY: { value: -1 }, uOpacity: { value: 0 }, uAqua: { value: AQUA }, uSignal: { value: SIGNAL } },
+      uniforms: { uScanY: { value: -1 }, uOpacity: { value: 0 }, uAqua: { value: paletteScanner }, uSignal: { value: paletteSoft } },
       vertexShader: `
         varying float vLocalY;
         void main() {
@@ -3277,7 +3369,7 @@ export function DentalScene({
     const pointMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uScanY: { value: -1 }, uOpacity: { value: 0 }, uPixelRatio: { value: renderer.getPixelRatio() },
-        uAqua: { value: AQUA_PALE }, uSignal: { value: SIGNAL },
+        uAqua: { value: palettePale }, uSignal: { value: paletteSoft },
       },
       vertexShader: `
         uniform float uScanY;
@@ -3315,7 +3407,7 @@ export function DentalScene({
       blending: THREE.AdditiveBlending,
     });
     const normalMaterial = new THREE.ShaderMaterial({
-      uniforms: { uScanY: { value: -1 }, uOpacity: { value: 0 }, uColor: { value: AQUA } },
+      uniforms: { uScanY: { value: -1 }, uOpacity: { value: 0 }, uColor: { value: paletteScanner } },
       vertexShader: `
         varying float vLocalY;
         void main() {
@@ -3340,7 +3432,7 @@ export function DentalScene({
       blending: THREE.AdditiveBlending,
     });
     const repairMaterial = new THREE.ShaderMaterial({
-      uniforms: { uRepairY: { value: -1 }, uOpacity: { value: 0 }, uColor: { value: AQUA_PALE } },
+      uniforms: { uRepairY: { value: -1 }, uOpacity: { value: 0 }, uColor: { value: palettePale } },
       vertexShader: `
         varying float vLocalY;
         void main() {
@@ -3372,8 +3464,9 @@ export function DentalScene({
         uTime: { value: 0 },
         uBoundsMin: { value: new THREE.Vector3(-1, -1, -1) },
         uBoundsSize: { value: new THREE.Vector3(2, 2, 2) },
-        uAqua: { value: new THREE.Color(0x83d6c5) },
-        uPearl: { value: new THREE.Color(0xe8fff8) },
+        uAqua: { value: paletteWave },
+        uPearl: { value: palettePale },
+        uVitality: { value: 1 },
       },
       vertexShader: `
         uniform vec3 uBoundsMin;
@@ -3395,6 +3488,7 @@ export function DentalScene({
         uniform float uTime;
         uniform vec3 uAqua;
         uniform vec3 uPearl;
+        uniform float uVitality;
         varying vec3 vNormalized;
         varying vec3 vViewNormal;
         varying vec3 vViewPosition;
@@ -3411,7 +3505,7 @@ export function DentalScene({
           float surfaceResponse = 0.64 + pow(max(0.0, dot(geometricNormal, viewDirection)), 1.6) * 0.36;
           float fresnel = pow(1.0 - max(0.0, dot(geometricNormal, viewDirection)), 2.3);
           float shimmer = 0.88 + sin(vNormalized.x * 29.0 + vNormalized.z * 21.0 - uTime * 0.8) * 0.12;
-          float energy = (mainWave * 0.72 + softHalo * 0.16 + echoWave * 0.22) * surfaceResponse * shimmer;
+          float energy = (mainWave * 0.72 + softHalo * 0.16 + echoWave * 0.22) * surfaceResponse * shimmer * uVitality;
           vec3 color = mix(uAqua, uPearl, mainWave * 0.72 + fresnel * 0.16);
           float alpha = energy * uOpacity * (0.82 + fresnel * 0.18);
           if (alpha < 0.006) discard;
@@ -3426,16 +3520,16 @@ export function DentalScene({
 
     const scannerGroup = new THREE.Group();
     modelGroup.add(scannerGroup);
-    const scanCoreMaterial = new THREE.MeshBasicMaterial({ color: 0xbff9eb, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
-    const scanVolumeMaterial = new THREE.MeshBasicMaterial({ color: 0x7bd9c5, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+    const scanCoreMaterial = new THREE.MeshBasicMaterial({ color: brandCyanPalette ? 0xe8fcff : 0xbff9eb, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+    const scanVolumeMaterial = new THREE.MeshBasicMaterial({ color: brandCyanPalette ? 0x79e6ee : 0x7bd9c5, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
     const contour = createContour();
     const emitterGeometry = new THREE.BufferGeometry();
     emitterGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(32 * 3), 3));
-    const emitterMaterial = new THREE.PointsMaterial({ color: 0xe8fff9, size: 0.024, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+    const emitterMaterial = new THREE.PointsMaterial({ color: brandCyanPalette ? 0xf4feff : 0xe8fff9, size: 0.024, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
     const emitters = new THREE.Points(emitterGeometry, emitterMaterial);
     const gridMaterials: THREE.Material[] = [];
 
-    const defectMaterial = new THREE.PointsMaterial({ color: 0xff6a43, size: 0.058, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+    const defectMaterial = new THREE.PointsMaterial({ color: brandCyanPalette ? 0x79e6ee : 0xff6a43, size: 0.058, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
     let defectPoints: THREE.Points | null = null;
     const bioDummy = new THREE.Object3D();
     const bioApproachPosition = new THREE.Vector3();
@@ -3539,9 +3633,9 @@ export function DentalScene({
         const fusionField = new Float32Array(position.count);
         const fieldOrder = new Float32Array(position.count);
         const sourceNormals = geometry.getAttribute("normal") as THREE.BufferAttribute;
-        const cool = new THREE.Color(0x4b68ff);
-        const warm = new THREE.Color(0xff5c36);
-        const cyan = new THREE.Color(0x83d6c5);
+        const cool = new THREE.Color(brandCyanPalette ? 0x164b52 : 0x4b68ff);
+        const warm = new THREE.Color(brandCyanPalette ? 0xe8fcff : 0xff5c36);
+        const cyan = new THREE.Color(brandCyanPalette ? 0x24b7c7 : 0x83d6c5);
         const mechanicalContacts = [
           [0.23, 0.73, 0.11, 0.1, 1], [0.34, 0.82, 0.1, 0.085, 0.82], [0.46, 0.7, 0.09, 0.1, 0.72],
           [0.55, 0.84, 0.11, 0.09, 1], [0.65, 0.72, 0.1, 0.105, 0.74], [0.76, 0.77, 0.09, 0.1, 0.88],
@@ -3589,9 +3683,15 @@ export function DentalScene({
         geometry.setAttribute("aFieldOrder", new THREE.BufferAttribute(fieldOrder, 1));
         reconstructionLightWaveMaterial.uniforms.uBoundsMin.value.copy(bounds.min);
         reconstructionLightWaveMaterial.uniforms.uBoundsSize.value.copy(size);
+        reconstructionSurfaceUniforms.uBoundsMin.value.copy(bounds.min);
+        reconstructionSurfaceUniforms.uBoundsSize.value.copy(size);
         configureThinFilmFlowBounds(fluidRetentionMaterial, bounds);
 
         modelGroup.add(new THREE.Mesh(geometry, baseMaterial));
+        const reconstructionSurfaceMesh = new THREE.Mesh(geometry, reconstructionSurfaceMaterial);
+        reconstructionSurfaceMesh.scale.setScalar(1.0015);
+        reconstructionSurfaceMesh.renderOrder = 1;
+        modelGroup.add(reconstructionSurfaceMesh);
         const lightWaveMesh = new THREE.Mesh(geometry, reconstructionLightWaveMaterial);
         lightWaveMesh.scale.setScalar(1.0025);
         lightWaveMesh.renderOrder = 2;
@@ -3652,7 +3752,7 @@ export function DentalScene({
         const scanWidth = Math.max(size.x, size.z) * 1.76;
         scannerGroup.add(new THREE.Mesh(new THREE.BoxGeometry(scanWidth, size.y * 0.005, scanWidth), scanCoreMaterial));
         scannerGroup.add(new THREE.Mesh(new THREE.BoxGeometry(scanWidth * 0.96, size.y * 0.036, scanWidth * 0.96), scanVolumeMaterial));
-        const scanGrid = new THREE.GridHelper(scanWidth, 20, 0x8fe1d0, 0x8fe1d0);
+        const scanGrid = new THREE.GridHelper(scanWidth, 20, brandCyanPalette ? 0x79e6ee : 0x8fe1d0, brandCyanPalette ? 0x79e6ee : 0x8fe1d0);
         const materials = Array.isArray(scanGrid.material) ? scanGrid.material : [scanGrid.material];
         materials.forEach((material) => {
           material.transparent = true;
@@ -3800,6 +3900,11 @@ export function DentalScene({
       const delta = Math.min(clock.getDelta(), 0.05);
       if (!reducedMotion) elapsed += delta;
       const visual = visualRef.current;
+      const comparisonBefore = visual.comparisonAppearance === "before";
+      const comparisonAfter = visual.comparisonAppearance === "after";
+      const workflowActive = visual.reconstructionMaterialProgress !== undefined;
+      const workflowProgress = THREE.MathUtils.clamp(visual.reconstructionMaterialProgress ?? 0, 0, 1);
+      const workflowReveal = ease(workflowProgress);
       const ensembleActive = ensembleRigs.length === 3
         && (visual.phase === "generate" || visual.phase === "recalculate" || visual.phase === "converge");
       const selectedSchemeCanRotate = ensembleActive && visual.phase === "converge" && visual.interactive;
@@ -4175,16 +4280,17 @@ export function DentalScene({
         const fusionProgress = visual.simulationField === "fusion" ? visual.simulationProgress : 1;
         updateFusionLayerRig(fusionLayerRig, fusionProgress, elapsed, fusionLayerOpacity, reducedMotion);
       }
+      const heatAppearance = comparisonBefore ? 0.48 : 0.9;
       heatMaterial.opacity = visual.phase === "segment"
         ? state.heat * (1 - ease(visual.stageProgress)) * 0.62
-        : state.heat * 0.9;
-      defectMaterial.opacity = state.defects * (0.55 + Math.sin(elapsed * 5.2) * 0.25);
+        : state.heat * heatAppearance;
+      defectMaterial.opacity = state.defects * (comparisonBefore ? 0.44 : 0.55 + Math.sin(elapsed * 5.2) * 0.25);
       scanCoreMaterial.opacity = state.scan * 0.065;
       scanVolumeMaterial.opacity = state.scan * 0.022;
       gridMaterials.forEach((material) => { material.opacity = state.scan * 0.06; });
       (contour.material as THREE.LineBasicMaterial).opacity = state.scan * 0.92;
       emitterMaterial.opacity = state.scan * 0.9;
-      scannerGroup.visible = state.scan > 0.01;
+      scannerGroup.visible = visual.showScannerOverlay && state.scan > 0.01;
 
       updateScanner(visual.stageProgress);
       revealMaterial.uniforms.uScanY.value = scanY;
@@ -4194,14 +4300,20 @@ export function DentalScene({
       normalMaterial.uniforms.uScanY.value = scanY;
       normalMaterial.uniforms.uOpacity.value = state.scan;
       repairMaterial.uniforms.uRepairY.value = THREE.MathUtils.lerp(minY, maxY, ease(visual.stageProgress));
-      repairMaterial.uniforms.uOpacity.value = state.repair;
-      const lightWaveActive = reconstructionLightWave && visual.phase === "ready";
-      if (lightWaveActive && readyEnteredAt === null) readyEnteredAt = elapsed;
-      if (!lightWaveActive) readyEnteredAt = null;
+      repairMaterial.uniforms.uOpacity.value = state.repair * (workflowActive ? 0.34 : 1);
+      reconstructionSurfaceUniforms.uRepairProgress.value = workflowActive ? workflowProgress : 0;
+      reconstructionSurfaceUniforms.uRepairTime.value = elapsed;
+      const repairSweepActive = reconstructionLightWave && workflowActive && visual.phase === "repair";
+      const readyLightWaveActive = reconstructionLightWave && visual.phase === "ready";
+      if (readyLightWaveActive && readyEnteredAt === null) readyEnteredAt = elapsed;
+      if (!readyLightWaveActive) readyEnteredAt = null;
       const readyElapsed = readyEnteredAt === null ? 0 : Math.max(0, elapsed - readyEnteredAt);
       let lightWavePosition = -0.2;
       let lightWaveOpacity = 0;
-      if (lightWaveActive) {
+      if (repairSweepActive) {
+        lightWavePosition = THREE.MathUtils.lerp(-0.18, 1.18, workflowReveal);
+        lightWaveOpacity = reducedMotion ? 0.24 : 0.9;
+      } else if (readyLightWaveActive) {
         if (reducedMotion) {
           lightWavePosition = 0.62;
           lightWaveOpacity = 0.2;
@@ -4220,37 +4332,56 @@ export function DentalScene({
       reconstructionLightWaveMaterial.uniforms.uOpacity.value = lightWaveOpacity;
       reconstructionLightWaveMaterial.uniforms.uWavePosition.value = lightWavePosition;
       reconstructionLightWaveMaterial.uniforms.uTime.value = elapsed;
+      reconstructionLightWaveMaterial.uniforms.uVitality.value = comparisonAfter ? 1.24 : repairSweepActive ? 1.1 : 1;
 
-      const warmLight = targets.heat > 0.2 ? SIGNAL : AQUA;
+      const exposureTarget = workflowActive ? THREE.MathUtils.lerp(0.82, 1.12, workflowReveal) : comparisonBefore ? 0.82 : comparisonAfter ? 1.25 : 1.12;
+      renderer.toneMappingExposure = THREE.MathUtils.damp(renderer.toneMappingExposure, exposureTarget, 3.4, delta);
+      hemisphere.intensity = THREE.MathUtils.damp(hemisphere.intensity, workflowActive ? THREE.MathUtils.lerp(1.18, 2.4, workflowReveal) : comparisonBefore ? 1.18 : comparisonAfter ? 2.75 : 2.4, 3.4, delta);
+      key.intensity = THREE.MathUtils.damp(key.intensity, workflowActive ? THREE.MathUtils.lerp(2.6, 5.2, workflowReveal) : comparisonBefore ? 2.6 : comparisonAfter ? 6.25 : 5.2, 3.4, delta);
+      rim.intensity = THREE.MathUtils.damp(rim.intensity, workflowActive ? THREE.MathUtils.lerp(0.8, 3.5, workflowReveal) : comparisonBefore ? 0.8 : comparisonAfter ? 5.15 : 3.5, 3.4, delta);
+      const keyTarget = workflowActive ? workflowKeyTarget.copy(RECONSTRUCTION_BEFORE_LIGHT).lerp(RECONSTRUCTION_STANDARD_LIGHT, workflowReveal) : comparisonBefore ? RECONSTRUCTION_BEFORE_LIGHT : RECONSTRUCTION_STANDARD_LIGHT;
+      key.color.lerp(keyTarget, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.2));
+      const warmLight = workflowActive
+        ? workflowRimTarget.copy(paletteBeforeRim).lerp(paletteRim, workflowReveal)
+        : comparisonBefore ? paletteBeforeRim : targets.heat > 0.2 && !comparisonAfter ? paletteSoft : paletteRim;
       rim.color.lerp(warmLight, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.2));
-      const baseTarget = targets.repair > 0.2
-        ? new THREE.Color(0xf1f6f0)
-        : fluidActivity > 0.08 ? new THREE.Color(0xb9c5c0) : new THREE.Color(0xdce3dc);
+      const afterArrival = comparisonAfter ? ease(THREE.MathUtils.clamp(readyElapsed / 1.25, 0, 1)) : 1;
+      const baseTarget = workflowActive
+        ? RECONSTRUCTION_BEFORE_SURFACE
+        : comparisonBefore
+        ? RECONSTRUCTION_BEFORE_SURFACE
+        : comparisonAfter
+          ? comparisonBaseTarget.copy(RECONSTRUCTION_AFTER_ENTRY).lerp(RECONSTRUCTION_AFTER_SURFACE, afterArrival)
+          : targets.repair > 0.2
+            ? new THREE.Color(0xf1f6f0)
+            : fluidActivity > 0.08 ? new THREE.Color(0xb9c5c0) : new THREE.Color(0xdce3dc);
       baseMaterial.color.lerp(baseTarget, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.2));
-      const targetRoughness = fluidActivity > 0.08 ? 0.21 : targets.scan > 0.2 ? 0.48 : 0.31;
+      const targetRoughness = workflowActive ? 0.72 : comparisonBefore ? 0.72 : comparisonAfter ? 0.18 : fluidActivity > 0.08 ? 0.21 : targets.scan > 0.2 ? 0.48 : 0.31;
       baseMaterial.roughness = THREE.MathUtils.damp(baseMaterial.roughness, targetRoughness, 3.2, delta);
-      baseMaterial.clearcoat = THREE.MathUtils.damp(baseMaterial.clearcoat, fluidActivity > 0.08 ? 0.74 : 0.42, 3.2, delta);
-      baseMaterial.clearcoatRoughness = THREE.MathUtils.damp(baseMaterial.clearcoatRoughness, fluidActivity > 0.08 ? 0.1 : 0.22, 3.2, delta);
+      baseMaterial.clearcoat = THREE.MathUtils.damp(baseMaterial.clearcoat, workflowActive ? 0.06 : comparisonBefore ? 0.06 : comparisonAfter ? 0.88 : fluidActivity > 0.08 ? 0.74 : 0.42, 3.2, delta);
+      baseMaterial.clearcoatRoughness = THREE.MathUtils.damp(baseMaterial.clearcoatRoughness, workflowActive ? 0.68 : comparisonBefore ? 0.68 : comparisonAfter ? 0.075 : fluidActivity > 0.08 ? 0.1 : 0.22, 3.2, delta);
 
       const focusRotations = [0, 0, Math.PI, Math.PI * 0.5, -Math.PI * 0.5];
       const focusTilts = [0.82, -0.12, -0.12, -0.12, -0.12];
       const modelingSweep = visual.phase === "generate" && focusRegionIndex < 0 ? (ease(visual.stageProgress) - 0.5) * 0.34 : 0;
-      const fieldRotation = visual.simulationField === "mechanics" ? -0.08
+      const fieldRotation = visual.synchronizedPose ? -0.12
+        : visual.simulationField === "mechanics" ? -0.08
         : visual.simulationField === "fluid" ? 0.24 + visual.simulationProgress * 0.1
           : visual.simulationField === "bio" ? -0.64 + visual.simulationProgress * 0.1
             : visual.simulationField === "fusion" ? 0.12 : phaseRotation(visual.phase);
       const targetRotationY = focusRegionIndex >= 0 ? focusRotations[focusRegionIndex] : fieldRotation + modelingSweep;
-      const driftAmplitude = visual.simulationField === "bio" ? 0.012 : visual.simulationField === "fluid" ? 0.024 : 0.035;
+      const driftAmplitude = visual.synchronizedPose ? 0 : visual.simulationField === "bio" ? 0.012 : visual.simulationField === "fluid" ? 0.024 : 0.035;
       const drift = reducedMotion ? 0 : Math.sin(elapsed * 0.25) * driftAmplitude;
       modelGroup.rotation.y = THREE.MathUtils.damp(modelGroup.rotation.y, targetRotationY + drift, 2.2, delta);
       const modelingTilt = visual.phase === "generate" ? THREE.MathUtils.lerp(-0.2, -0.04, ease(visual.stageProgress)) : -0.12;
-      const fieldTilt = focusRegionIndex >= 0 ? focusTilts[focusRegionIndex]
+      const fieldTilt = visual.synchronizedPose ? -0.12
+        : focusRegionIndex >= 0 ? focusTilts[focusRegionIndex]
         : visual.simulationField === "fluid" ? -0.21
           : visual.simulationField === "bio" ? -0.06
             : visual.simulationField === "mechanics" ? -0.15
               : visual.simulationField === "fusion" ? -0.18 : modelingTilt;
       modelGroup.rotation.x = THREE.MathUtils.damp(modelGroup.rotation.x, fieldTilt, 2.4, delta);
-      modelGroup.position.y = reducedMotion ? 0 : Math.sin(elapsed * 0.62) * 0.028;
+      modelGroup.position.y = reducedMotion || visual.synchronizedPose ? 0 : Math.sin(elapsed * 0.62) * 0.028;
       const arrival = visual.phase === "parse" || visual.phase === "ingress" ? 0.94 + ease(visual.stageProgress) * 0.06 : 1;
       const targetScale = baseScale * arrival;
       const scale = THREE.MathUtils.damp(modelGroup.scale.x, targetScale, 3.5, delta);
@@ -4381,7 +4512,7 @@ export function DentalScene({
           });
         }
       });
-      [baseMaterial, heatMaterial, simulationMaterial, fluidRetentionMaterial, bioFilmMaterial, bioRiskMaterial, revealMaterial, pointMaterial, normalMaterial, repairMaterial, reconstructionLightWaveMaterial, defectMaterial, scanCoreMaterial, scanVolumeMaterial, emitterMaterial, ...textureMaterials].forEach((material) => {
+      [baseMaterial, reconstructionSurfaceMaterial, heatMaterial, simulationMaterial, fluidRetentionMaterial, bioFilmMaterial, bioRiskMaterial, revealMaterial, pointMaterial, normalMaterial, repairMaterial, reconstructionLightWaveMaterial, defectMaterial, scanCoreMaterial, scanVolumeMaterial, emitterMaterial, ...textureMaterials].forEach((material) => {
         if (!disposedMaterials.has(material)) material.dispose();
       });
       geometryRigCache.forEach((rig) => {
@@ -4398,7 +4529,7 @@ export function DentalScene({
         [1, 2, 3].forEach((schemeNumber) => layoutHost.style.removeProperty(`--scheme-${schemeNumber}-x`));
       }
     };
-  }, [src, reconstructionLightWave]);
+  }, [src, reconstructionLightWave, visualPalette]);
 
   return <div ref={mountRef} className={className} aria-label="可交互义齿精密扫描与仿真三维模型" />;
 }

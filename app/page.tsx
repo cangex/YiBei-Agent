@@ -1,12 +1,14 @@
-/* eslint-disable @next/next/no-html-link-for-pages */
+/* eslint-disable @next/next/no-html-link-for-pages, @next/next/no-img-element */
 import { HeroToothScene } from "./components/HeroToothScene";
 
 export default function Home() {
   return (
     <main className="site-shell home-shell">
       <header className="topbar">
-        <a className="brand-lockup" href="/" aria-label="益贝医疗智能体首页">
-          <span className="brand-mark" aria-hidden="true"><i /><i /></span>
+        <a className="brand-lockup home-brand-lockup" href="/" aria-label="益贝医疗智能体首页">
+          <span className="home-brand-logo" aria-hidden="true">
+            <img src="/brand/yibei-medical-logo.png" width="1608" height="1998" alt="" />
+          </span>
           <span>益贝医疗智能体</span>
         </a>
         <span className="topbar-note">DENTAL INTELLIGENCE · 2026</span>

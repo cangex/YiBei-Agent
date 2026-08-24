@@ -5,17 +5,17 @@ import { DentalScene, DentalSceneMode, DentalScenePhase } from "./DentalScene";
 import { ProductNav } from "./ProductNav";
 
 const steps = [
-  { id: "01", title: "解析几何", note: "读取三角网格与空间边界" },
-  { id: "02", title: "全域扫描", note: "建立轮廓与曲率特征场" },
-  { id: "03", title: "异常识别", note: "定位噪声、孔洞与非流形区域" },
-  { id: "04", title: "智能补全", note: "生成连续、平滑的候选轮廓" },
-  { id: "05", title: "精度校验", note: "执行重建前后误差映射" },
-  { id: "06", title: "模型就绪", note: "输出可进入双微设计的STL" },
+  { id: "01", title: "解析几何", titleEn: "MESH PARSING", note: "读取三角网格与空间边界", noteEn: "READ TRIANGLE MESH AND SPATIAL BOUNDS" },
+  { id: "02", title: "全域扫描", titleEn: "GLOBAL SCAN", note: "建立轮廓与曲率特征场", noteEn: "BUILD CONTOUR AND CURVATURE FEATURE FIELDS" },
+  { id: "03", title: "异常识别", titleEn: "ANOMALY DETECTION", note: "定位噪声、孔洞与非流形区域", noteEn: "LOCATE NOISE, HOLES AND NON-MANIFOLD REGIONS" },
+  { id: "04", title: "智能补全", titleEn: "CONTOUR COMPLETION", note: "生成连续、平滑的候选轮廓", noteEn: "GENERATE CONTINUOUS AND SMOOTH CONTOURS" },
+  { id: "05", title: "精度校验", titleEn: "PRECISION VALIDATION", note: "执行重建前后误差映射", noteEn: "MAP ERRORS BEFORE AND AFTER RECONSTRUCTION" },
+  { id: "06", title: "模型就绪", titleEn: "MODEL READY", note: "输出可进入双微设计的STL", noteEn: "OUTPUT STL READY FOR DUAL-MICRO DESIGN" },
 ];
 
 const modes: DentalSceneMode[] = ["porcelain", "scan", "heatmap", "repaired", "heatmap", "repaired"];
 const visualPhases: DentalScenePhase[] = ["parse", "scan", "defect", "repair", "validate", "ready"];
-const stepDurations = [1800, 3000, 2400, 2700, 2400, 1600];
+const stepDurations = [1800, 3000, 2400, 4200, 2400, 1600];
 
 function ease(value: number) {
   return value * value * (3 - 2 * value);
@@ -100,46 +100,124 @@ export function ReconstructionExperience() {
   const currentMode = complete ? "repaired" : modes[activeStep];
   const currentPhase: DentalScenePhase = complete ? "ready" : running ? visualPhases[activeStep] : "idle";
   const defectCount = useMemo(() => Math.max(6, Math.round(triangles / 4100)), [triangles]);
+  const comparisonMetrics = useMemo(() => {
+    const beforeContinuity = Math.max(88.6, 95.4 - defectCount * 0.33);
+    const beforeTopology = Math.max(84.2, 91.6 - defectCount * 0.3);
+    const beforeSmoothness = Math.max(78.4, 85.4 - defectCount * 0.3);
+    const remainingDefects = Math.max(1, Math.round(defectCount * 0.1));
+    return [
+      { label: "轮廓连续度", before: `${beforeContinuity.toFixed(1)}%`, after: "99.2%", delta: `+${(99.2 - beforeContinuity).toFixed(1)}%` },
+      { label: "异常轮廓", before: `${defectCount} 处`, after: `${remainingDefects} 处`, delta: `−${defectCount - remainingDefects}` },
+      { label: "拓扑完整性", before: beforeTopology.toFixed(1), after: "98.7", delta: `+${(98.7 - beforeTopology).toFixed(1)}` },
+      { label: "表面平滑度", before: beforeSmoothness.toFixed(1), after: "96.8", delta: `+${(96.8 - beforeSmoothness).toFixed(1)}` },
+    ];
+  }, [defectCount]);
 
   return (
     <main className="product-page reconstruction-page">
-      <ProductNav section="义齿三维轮廓超精准重建" />
+      <ProductNav section="义齿三维轮廓超精准重建" brandVariant="reconstruction" />
 
       <section className="product-intro">
         <div>
           <span className="eyebrow">PRODUCT 01 · GEOMETRY RECONSTRUCTION</span>
-          <h1>让每一处缺失的轮廓，<br /><em>重新连续。</em></h1>
+          <h1>让每一处缺失的轮廓，<em>重新连续。</em></h1>
         </div>
-        <p>以真实STL为入口，将网格解析、异常识别、智能补全与误差校验收束为一次流畅的重建过程。</p>
+        <div className={`reconstruction-intro-action ${running ? "is-running" : ""}`} aria-live="polite">
+          {!complete ? (
+            <button className="primary-orbit-button" type="button" onClick={start} disabled={running}>
+              <span>{running ? `智能体运行中 · ${String(progress).padStart(2, "0")}%` : "启动超精准重建"}</span><i aria-hidden="true">→</i>
+            </button>
+          ) : (
+            <a className="primary-orbit-button is-ready" href="/twin-ai?source=processed">
+              <span>进入双微AI设计</span><i aria-hidden="true">→</i>
+            </a>
+          )}
+        </div>
       </section>
 
-      <section className={`reconstruction-workspace ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
-        <div className="scene-column">
+      <section className={`reconstruction-workspace ${dragging ? "is-dragging" : ""} ${complete ? "is-complete" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
+        <div className={`scene-column ${complete ? "is-complete" : ""}`}>
           <div className="scene-meta scene-meta-top">
-            <span><i className="live-dot" /> REAL-TIME MESH</span>
+            <span><i className="live-dot" /> {complete ? "SYNCHRONIZED COMPARISON" : "REAL-TIME MESH"}</span>
             <span>{fileName}</span>
           </div>
-          <DentalScene
-            src={modelSrc}
-            mode={currentMode}
-            phase={currentPhase}
-            stageProgress={complete ? 1 : stageProgress}
-            reconstructionLightWave
-            interactive={!running}
-            className="dental-scene reconstruction-scene"
-            onLoaded={({ triangles: count }) => setTriangles(Math.round(count))}
-          />
+          {!complete ? (
+            <DentalScene
+              src={modelSrc}
+              mode={currentMode}
+              phase={currentPhase}
+              stageProgress={stageProgress}
+              visualPalette="brand-cyan"
+              reconstructionLightWave
+              reconstructionMaterialProgress={!running || activeStep <= 2 ? 0 : activeStep === 3 ? stageProgress : 1}
+              synchronizedPose={!running}
+              interactive={!running}
+              className="dental-scene reconstruction-scene"
+              onLoaded={({ triangles: count }) => setTriangles(Math.round(count))}
+            />
+          ) : (
+            <div className="reconstruction-comparison" aria-label="重建前后模型与参数对比">
+              <div className="comparison-model-stage">
+                <article className="comparison-model comparison-model-before">
+                  <header><span>BEFORE / ORIGINAL MESH</span><strong>重建前</strong></header>
+                  <DentalScene
+                    src={modelSrc}
+                    mode="porcelain"
+                    phase="idle"
+                    stageProgress={0}
+                    visualPalette="brand-cyan"
+                    comparisonAppearance="before"
+                    showScannerOverlay={false}
+                    synchronizedPose
+                    interactive={false}
+                    className="dental-scene comparison-dental-scene"
+                    onLoaded={({ triangles: count }) => setTriangles(Math.round(count))}
+                  />
+                </article>
+                <i className="comparison-centerline" aria-hidden="true"><b /></i>
+                <article className="comparison-model comparison-model-after">
+                  <header><span>AFTER / CONTINUOUS SURFACE</span><strong>重建后</strong></header>
+                  <DentalScene
+                    src={modelSrc}
+                    mode="repaired"
+                    phase="ready"
+                    stageProgress={1}
+                    visualPalette="brand-cyan"
+                    reconstructionLightWave
+                    comparisonAppearance="after"
+                    synchronizedPose
+                    interactive={false}
+                    className="dental-scene comparison-dental-scene"
+                  />
+                </article>
+              </div>
+              <div className="comparison-metrics" aria-label="重建参数对比">
+                {comparisonMetrics.map((metric, index) => (
+                  <article key={metric.label} style={{ "--metric-order": index } as CSSProperties}>
+                    <span>{metric.label}</span>
+                    <div><small>重建前</small><strong>{metric.before}</strong></div>
+                    <i><b /></i>
+                    <div className="is-after"><small>重建后</small><strong>{metric.after}</strong></div>
+                    <em>{metric.delta}</em>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
           {running && <div key={`bridge-${activeStep}`} className="stage-transition-veil" aria-hidden="true" />}
-          {(running || complete) && <div className={`processing-caption ${complete ? "is-complete" : ""}`}>
-            <span key={`caption-${activeStep}-${complete}`} className="processing-caption-copy">
-              <i>{complete ? "READY" : steps[activeStep].id}</i>
-              <b>{complete ? "RECONSTRUCTION COMPLETE" : steps[activeStep].title}</b>
-              <small>{complete ? "连续表面已进入可设计状态" : steps[activeStep].note}</small>
+          {running && <div className="processing-caption">
+            <span key={`caption-${activeStep}`} className="processing-caption-copy">
+              <i>{steps[activeStep].id}</i>
+              <span className="processing-caption-heading">
+                <b>{steps[activeStep].title}</b>
+                <em><span>{steps[activeStep].titleEn}</span></em>
+              </span>
+              <small>{steps[activeStep].note}</small>
             </span>
             <strong>{String(progress).padStart(2, "0")}%</strong>
             <em className="processing-progress"><i style={{ width: `${progress}%` }} /></em>
           </div>}
-          <div className="scene-axis" aria-hidden="true"><span>X</span><span>Y</span><span>Z</span></div>
+          {!complete && <div className="scene-axis" aria-hidden="true"><span>X</span><span>Y</span><span>Z</span></div>}
           {dragging && <div className="drop-overlay"><strong>释放以载入模型</strong><span>STL · MAX 80 MB</span></div>}
         </div>
 
@@ -156,37 +234,27 @@ export function ReconstructionExperience() {
           <div className="process-rail" aria-label="重建流程" style={{ "--rail-progress": `${complete ? 100 : (activeStep + stageProgress) / steps.length * 100}%` } as CSSProperties}>
             <span className="process-rail-fill" aria-hidden="true" />
             {steps.map((step, index) => (
-              <div key={step.id} style={index === activeStep ? { "--step-progress": stageProgress } as CSSProperties : undefined} className={`process-step ${index === activeStep ? "is-active" : ""} ${index < activeStep || complete ? "is-done" : ""}`}>
+              <div key={step.id} style={!complete && index === activeStep ? { "--step-progress": stageProgress } as CSSProperties : undefined} className={`process-step ${!complete && index === activeStep ? "is-active" : ""} ${index < activeStep || complete ? "is-done" : ""}`}>
                 <span className="step-index">{step.id}</span>
                 <span className="step-marker"><i /></span>
-                <span className="step-copy"><strong>{step.title}</strong><small>{step.note}</small></span>
+                <span className="step-copy">
+                  <span className="step-title-row"><strong>{step.title}</strong><em>{step.titleEn}</em></span>
+                  <span className="step-note-cn">{step.note}</span>
+                  <span className="step-note-en">{step.noteEn}</span>
+                </span>
               </div>
             ))}
           </div>
 
           <div className="metric-ribbon">
             <span><small>三角面</small><strong>{triangles.toLocaleString("zh-CN")}</strong></span>
-            <span><small>识别异常</small><strong>{complete ? defectCount : "—"}</strong></span>
-            <span><small>轮廓连续度</small><strong>{complete ? "99.2%" : "—"}</strong></span>
+            <span><small>{complete ? "输出网格" : "识别异常"}</small><strong>{complete ? "STL" : "—"}</strong></span>
+            <span><small>{complete ? "设计链路" : "轮廓连续度"}</small><strong>{complete ? "READY" : "—"}</strong></span>
           </div>
 
-          {!complete ? (
-            <button className="primary-orbit-button" type="button" onClick={start} disabled={running}>
-              <span>{running ? "智能体运行中" : "启动超精准重建"}</span><i aria-hidden="true">→</i>
-            </button>
-          ) : (
-            <a className="primary-orbit-button is-ready" href="/twin-ai?source=processed">
-              <span>进入双微AI设计</span><i aria-hidden="true">→</i>
-            </a>
-          )}
         </aside>
       </section>
 
-      <section className="reconstruction-footnote">
-        <span>01 / INPUT</span><p>任意STL网格</p><i />
-        <span>02 / PROCESS</span><p>几何特征场与确定性重建演示</p><i />
-        <span>03 / OUTPUT</span><p>连续、可设计的义齿表面</p>
-      </section>
     </main>
   );
 }
