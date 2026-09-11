@@ -23,29 +23,67 @@ test("server-renders the finished Yibei brand homepage", async () => {
   assert.match(html, /<html lang="zh-CN">/);
   assert.match(html, /<title>益贝医疗智能体｜智能义齿设计与数字孪生验证<\/title>/);
   assert.match(html, /精准口腔微生态调控专家/);
-  assert.match(html, /以微纳织构技术，/);
-  assert.match(html, /探寻智能义齿/);
+  assert.match(html, /以仿生微织构，探寻智能口腔修复体/);
   assert.match(html, /未来式/);
+  assert.match(html, /口腔修复体扫描平台，规划中/);
+  assert.match(html, /义齿三维轮廓超精准重建智能体/);
+  assert.match(html, /双微AI设计智能体及验证平台/);
+  assert.match(html, /仿生微纳织构加工平台，规划中/);
   assert.match(html, /src="\/brand\/yibei-medical-logo\.png"/);
   assert.match(html, /href="\/reconstruction"/);
   assert.match(html, /href="\/twin-ai"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/);
 });
 
-test("homepage uses a crown-dominant square molar instead of the product demo STL", async () => {
-  const [homepage, heroScene] = await Promise.all([
+test("homepage restores the single scanned molar above four product entries", async () => {
+  const [homepage, experience, heroScene, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/HomeProductExperience.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/HeroToothScene.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(homepage, /HeroToothScene/);
+  assert.match(homepage, /HomeProductExperience/);
   assert.match(homepage, /home-brand-logo/);
+  assert.match(experience, /HeroToothScene/);
+  assert.doesNotMatch(experience, /HeroSurfaceEvolution|surface-stage-readouts/);
+  assert.match(experience, /home-product-rail/);
+  assert.match(experience, /home-product-track/);
+  assert.match(experience, /aria-disabled="true"/);
+  assert.match(experience, /STRUCTURED SURFACE CAPTURE/);
+  assert.match(experience, /NORMAL · CURVATURE · DEPTH/);
+  assert.match(experience, /home-single-tooth-model/);
+  assert.match(experience, /onMouseEnter/);
+  assert.match(experience, /onFocus/);
+  assert.match(experience, /autoMode/);
+  assert.match(experience, /effectiveMode/);
+  assert.match(experience, /href: "\/reconstruction"/);
+  assert.match(experience, /href: "\/twin-ai"/);
+  assert.doesNotMatch(experience, /ENTER PRODUCT|PLANNED ·/);
+  assert.doesNotMatch(experience, /type="button" disabled aria-label="口腔修复体扫描平台/);
+  assert.doesNotMatch(homepage, /以仿生微织构，<br \/>/);
+  assert.match(styles, /\.home-hero \.hero-title \{[^}]*white-space: nowrap/);
+  assert.match(styles, /\.home-product-track \{[^}]*grid-template-columns: repeat\(4/);
+  assert.match(styles, /\.home-product-experience \{[^}]*grid-template-rows: minmax\(310px, 1fr\) auto/);
+  assert.match(styles, /\.home-product-rail \{[^}]*margin: clamp\(10px, 1\.5vh, 18px\)/);
+  assert.match(styles, /\.home-product-node \{ width: 44px; height: 44px/);
+  assert.match(styles, /\.home-product-entry strong \{[^}]*font-size: clamp\(16px, 1\.25vw, 19px\)/);
+  assert.match(styles, /\.home-single-tooth-model \{[^}]*width: min\(392px, 44vw\)/);
+  assert.match(styles, /\.home-product-experience \.single-tooth-hero-stage/);
+  assert.match(styles, /home-product-line-in/);
+  assert.match(styles, /home-product-signal/);
+  assert.doesNotMatch(styles, /home-planned-scan|home-planned-orbit/);
   assert.doesNotMatch(homepage, /className="brand-mark"/);
-  assert.doesNotMatch(homepage, /DentalScene|demo\.stl/);
+  assert.match(heroScene, /ShaderMaterial/);
   assert.match(heroScene, /STLLoader/);
   assert.match(heroScene, /standard-molar\.stl/);
   assert.match(heroScene, /ROOT_COMPRESSION = 0\.18/);
   assert.match(heroScene, /MODEL_SCALE = 0\.75/);
-  assert.doesNotMatch(heroScene, /demo\.stl|createAnatomicalTooth|createCrown|createRoot/);
+  assert.match(heroScene, /createSliceProfile/);
+  assert.match(heroScene, /createPointCloud/);
+  assert.match(heroScene, /createNormalField/);
+  assert.match(heroScene, /uScanY/);
+  assert.match(heroScene, /prefers-reduced-motion/);
+  assert.doesNotMatch(heroScene, /demo\.stl/);
 });
 
 test("server-renders both product routes with independent metadata", async () => {
@@ -101,7 +139,7 @@ test("ships the real STL demonstration model", async () => {
   assert.ok(model.size > 2_000_000);
 });
 
-test("ships the CC0 compact molar homepage model", async () => {
+test("retains the CC0 compact molar asset for possible future use", async () => {
   const [model, notices] = await Promise.all([
     stat(new URL("../public/models/standard-molar.stl", import.meta.url)),
     readFile(new URL("../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8"),
@@ -112,9 +150,11 @@ test("ships the CC0 compact molar homepage model", async () => {
 });
 
 test("product scenes use precision scanning, dense on-model regional microgeometry, and continuous transitions", async () => {
-  const [scene, reconstruction, twin, styles] = await Promise.all([
+  const [scene, reconstruction, reconstructionDetail, reconstructionPatch, twin, styles] = await Promise.all([
     readFile(new URL("../app/components/DentalScene.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/ReconstructionExperience.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ReconstructionDetailOverlay.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ReconstructionPatchScene.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/TwinAIExperience.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
@@ -238,10 +278,15 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.match(scene, /reconstructionMaterialProgress/);
   assert.match(scene, /createReconstructionSurfaceMaterial/);
   assert.match(scene, /uRepairProgress/);
+  assert.match(scene, /unified-reconstruction-surface/);
+  assert.match(scene, /uWorkflowActive/);
+  assert.match(scene, /reconstructedColor/);
+  assert.match(scene, /position \+ normal \* uSurfaceOffset/);
+  assert.doesNotMatch(scene, /reconstructionSurfaceMesh/);
   assert.match(scene, /repairSweepActive/);
   assert.match(scene, /RECONSTRUCTION_BEFORE_SURFACE/);
   assert.match(scene, /uVitality/);
-  assert.match(scene, /visual\.showScannerOverlay && state\.scan > 0\.01/);
+  assert.match(scene, /visual\.showScannerOverlay && visual\.phase !== "validate" && state\.scan > 0\.01/);
   assert.match(scene, /reconstructionLightWaveMaterial/);
   assert.match(scene, /uWavePosition/);
   assert.match(scene, /curvedCoordinate/);
@@ -255,6 +300,61 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.doesNotMatch(scene, /makePatternTexture/);
   assert.match(reconstruction, /stageProgress/);
   assert.match(reconstruction, /reconstructionLightWave/);
+  assert.match(reconstruction, /ReconstructionDetailOverlay/);
+  assert.match(reconstruction, /reconstructionFocusIndex/);
+  assert.match(reconstruction, /\[2800, 6800, 52000, 14000, 2800\]/);
+  assert.match(reconstruction, /title: "异常修复", titleEn: "ANOMALY REPAIR"/);
+  assert.match(reconstruction, /发现一处，即刻修复一处/);
+  assert.doesNotMatch(reconstruction, /title: "异常识别"|title: "智能补全"/);
+  assert.match(scene, /reconstructionFocusRotations/);
+  assert.match(scene, /reconstructionFocusTilts/);
+  assert.match(scene, /reconstructionFocusHeights/);
+  assert.match(reconstructionDetail, /OCCLUSAL FISSURE/);
+  assert.match(reconstructionDetail, /BUCCAL SURFACE/);
+  assert.match(reconstructionDetail, /MESIAL · CERVICAL MARGIN/);
+  assert.match(reconstructionDetail, /DISTAL SIDEWALL/);
+  assert.match(reconstructionDetail, /EDGE SEARCH/);
+  assert.match(reconstructionDetail, /TOPOLOGY RELINK/);
+  assert.match(reconstructionDetail, /MEMBRANE GROW/);
+  assert.match(reconstructionDetail, /GROOVE SCULPT/);
+  assert.match(reconstructionDetail, /activeStep !== 2/);
+  assert.match(reconstructionDetail, /RECONSTRUCTION_DETAIL_REGIONS\.slice\(0, detail\.regionIndex \+ 1\)/);
+  assert.match(reconstructionDetail, /局部三维异常发现与轮廓修复计算细节/);
+  assert.match(reconstructionPatch, /WebGLRenderer/);
+  assert.match(reconstructionPatch, /createMarginRig/);
+  assert.match(reconstructionPatch, /createTopologyRig/);
+  assert.match(reconstructionPatch, /createHoleRig/);
+  assert.match(reconstructionPatch, /createFissureRig/);
+  assert.match(reconstructionPatch, /TubeGeometry/);
+  assert.match(reconstructionPatch, /fanTriangles/);
+  assert.match(reconstructionPatch, /createSurfaceApronGeometry/);
+  assert.match(reconstructionPatch, /createHoleWallGeometry/);
+  assert.match(reconstructionPatch, /bridgeFaces/);
+  assert.match(reconstructionPatch, /sculptedSurface/);
+  assert.match(reconstructionPatch, /shadowMap\.enabled = true/);
+  assert.match(reconstructionPatch, /shadowMap\.autoUpdate = false/);
+  assert.match(reconstructionPatch, /1000 \/ 30/);
+  assert.match(scene, /maximumPixelRatio/);
+  assert.match(scene, /applyPixelRatio/);
+  assert.match(scene, /material\.visible = false/);
+  assert.match(scene, /reconstructionLightWaveMaterial\.visible/);
+  assert.match(scene, /IntersectionObserver/);
+  assert.match(scene, /precision-validation-rig/);
+  assert.match(scene, /createPrecisionValidationRig/);
+  assert.match(scene, /updatePrecisionValidationRig/);
+  assert.match(scene, /aValidationResidual/);
+  assert.match(scene, /confidenceMaterial/);
+  assert.match(scene, /validationRotation/);
+  assert.match(reconstruction, /SPATIAL REGISTRATION/);
+  assert.match(reconstruction, /3D RESIDUAL MAPPING/);
+  assert.match(reconstruction, /CONTINUITY VERIFICATION/);
+  assert.match(reconstruction, /GLOBAL CONFIDENCE CONVERGENCE/);
+  assert.match(reconstruction, /precision-validation-hud/);
+  assert.match(styles, /\.reconstruction-detail-viewport/);
+  assert.match(styles, /\.detail-focus-locator/);
+  assert.match(styles, /\.reconstruction-patch-webgl/);
+  assert.match(styles, /\.precision-validation-hud/);
+  assert.match(styles, /validation-phase-solve/);
   assert.match(reconstruction, /SYNCHRONIZED COMPARISON/);
   assert.match(reconstruction, /comparison-model-before/);
   assert.match(reconstruction, /comparison-model-after/);
@@ -263,7 +363,7 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.match(reconstruction, /showScannerOverlay=\{false\}/);
   assert.match(reconstruction, /comparisonAppearance="before"/);
   assert.match(reconstruction, /comparisonAppearance="after"/);
-  assert.match(reconstruction, /reconstructionMaterialProgress=\{!running \|\| activeStep <= 2 \? 0 : activeStep === 3 \? stageProgress : 1\}/);
+  assert.match(reconstruction, /reconstructionMaterialProgress=\{reconstructionMaterialProgress\}/);
   assert.match(reconstruction, /mode="porcelain"[\s\S]*phase="idle"[\s\S]*comparisonAppearance="before"/);
   assert.doesNotMatch(reconstruction, /参数为前端确定性演示评估|reconstruction-footnote/);
   assert.doesNotMatch(reconstruction, /异常轮廓与误差场保留/);
@@ -272,6 +372,12 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.match(reconstruction, /noteEn: "READ TRIANGLE MESH AND SPATIAL BOUNDS"/);
   assert.match(reconstruction, /step-title-row/);
   assert.match(reconstruction, /step-note-en/);
+  assert.match(reconstruction, /process-rail-track/);
+  assert.match(reconstruction, /process-rail-pulse/);
+  assert.match(reconstruction, /step-live-status/);
+  assert.match(reconstruction, /RUNNING ·/);
+  assert.match(reconstruction, /区域.*\/ 04/);
+  assert.match(reconstruction, /校验.*\/ 04/);
   assert.match(reconstruction, /reconstruction-intro-action/);
   assert.match(reconstruction, /智能体运行中 ·/);
   assert.doesNotMatch(reconstruction, /以真实STL为入口，将网格解析/);
@@ -326,6 +432,11 @@ test("product scenes use precision scanning, dense on-model regional microgeomet
   assert.match(styles, /width: min\(660px, calc\(100% - 150px\)\)/);
   assert.match(styles, /process-step\.is-active \.step-title-row strong/);
   assert.match(styles, /process-step\.is-active \.step-note-en/);
+  assert.match(styles, /--run-signal: #ff654f/);
+  assert.match(styles, /conic-gradient\(var\(--run-signal\)/);
+  assert.match(styles, /process-marker-breathe/);
+  assert.match(styles, /process-rail-tail/);
+  assert.match(styles, /process-step-scan/);
   assert.match(styles, /reconstruction-intro-action/);
   assert.match(styles, /modeling-path-solve/);
   assert.match(styles, /region-color-legend/);

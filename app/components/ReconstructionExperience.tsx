@@ -3,22 +3,30 @@
 import { CSSProperties, ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { DentalScene, DentalSceneMode, DentalScenePhase } from "./DentalScene";
 import { ProductNav } from "./ProductNav";
+import { ReconstructionDetailOverlay, resolveReconstructionDetail } from "./ReconstructionDetailOverlay";
 
 const steps = [
   { id: "01", title: "解析几何", titleEn: "MESH PARSING", note: "读取三角网格与空间边界", noteEn: "READ TRIANGLE MESH AND SPATIAL BOUNDS" },
   { id: "02", title: "全域扫描", titleEn: "GLOBAL SCAN", note: "建立轮廓与曲率特征场", noteEn: "BUILD CONTOUR AND CURVATURE FEATURE FIELDS" },
-  { id: "03", title: "异常识别", titleEn: "ANOMALY DETECTION", note: "定位噪声、孔洞与非流形区域", noteEn: "LOCATE NOISE, HOLES AND NON-MANIFOLD REGIONS" },
-  { id: "04", title: "智能补全", titleEn: "CONTOUR COMPLETION", note: "生成连续、平滑的候选轮廓", noteEn: "GENERATE CONTINUOUS AND SMOOTH CONTOURS" },
-  { id: "05", title: "精度校验", titleEn: "PRECISION VALIDATION", note: "执行重建前后误差映射", noteEn: "MAP ERRORS BEFORE AND AFTER RECONSTRUCTION" },
-  { id: "06", title: "模型就绪", titleEn: "MODEL READY", note: "输出可进入双微设计的STL", noteEn: "OUTPUT STL READY FOR DUAL-MICRO DESIGN" },
+  { id: "03", title: "异常修复", titleEn: "ANOMALY REPAIR", note: "自下而上发现一处，即刻修复一处", noteEn: "DISCOVER AND REPAIR EACH REGION FROM CERVICAL MARGIN UPWARD" },
+  { id: "04", title: "精度校验", titleEn: "PRECISION VALIDATION", note: "执行重建前后误差映射", noteEn: "MAP ERRORS BEFORE AND AFTER RECONSTRUCTION" },
+  { id: "05", title: "模型就绪", titleEn: "MODEL READY", note: "输出可进入双微设计的STL", noteEn: "OUTPUT STL READY FOR DUAL-MICRO DESIGN" },
 ];
 
-const modes: DentalSceneMode[] = ["porcelain", "scan", "heatmap", "repaired", "heatmap", "repaired"];
-const visualPhases: DentalScenePhase[] = ["parse", "scan", "defect", "repair", "validate", "ready"];
-const stepDurations = [1800, 3000, 2400, 4200, 2400, 1600];
+const modes: DentalSceneMode[] = ["porcelain", "scan", "repaired", "heatmap", "repaired"];
+const visualPhases: DentalScenePhase[] = ["parse", "scan", "repair", "validate", "ready"];
+const stepDurations = [2800, 6800, 52000, 14000, 2800];
+
+const validationPhases = [
+  { zh: "空间配准", en: "SPATIAL REGISTRATION", note: "重建前后表面进入同一坐标基准", until: 0.2 },
+  { zh: "三维残差测量", en: "3D RESIDUAL MAPPING", note: "扫描截面生成误差云图与偏差向量", until: 0.55 },
+  { zh: "连续性复核", en: "CONTINUITY VERIFICATION", note: "逐区复核边缘、拓扑、孔洞与沟槽", until: 0.82 },
+  { zh: "全局置信收敛", en: "GLOBAL CONFIDENCE CONVERGENCE", note: "残差场收束为连续可信的表面包络", until: 1 },
+];
 
 function ease(value: number) {
-  return value * value * (3 - 2 * value);
+  const clamped = Math.max(0, Math.min(1, value));
+  return clamped * clamped * (3 - 2 * clamped);
 }
 
 export function ReconstructionExperience() {
@@ -99,6 +107,33 @@ export function ReconstructionExperience() {
   const progress = running ? Math.round(((activeStep + ease(stageProgress)) / steps.length) * 100) : complete ? 100 : 0;
   const currentMode = complete ? "repaired" : modes[activeStep];
   const currentPhase: DentalScenePhase = complete ? "ready" : running ? visualPhases[activeStep] : "idle";
+  const reconstructionDetail = resolveReconstructionDetail(activeStep, stageProgress, running);
+  const validationDetail = running && activeStep === 3
+    ? (() => {
+        const phaseIndex = Math.max(0, validationPhases.findIndex((phase) => stageProgress <= phase.until));
+        return { phaseIndex, phase: validationPhases[phaseIndex] };
+      })()
+    : null;
+  const runtimePhases = [
+    ["读取网格缓冲", "计算表面法向", "归一化空间边界"],
+    ["追踪全域轮廓", "构建曲率特征场", "收束扫描结果"],
+    ["定位异常区域", "生成修复候选", "验证局部连续性"],
+    ["建立坐标基准", "测量三维残差", "收束全局置信"],
+    ["整理连续表面", "编排输出网格", "连接双微设计"],
+  ];
+  const fallbackRuntimeIndex = Math.min(2, Math.floor(stageProgress * 3));
+  const runtimeStatus = reconstructionDetail
+    ? `区域 ${String(reconstructionDetail.regionIndex + 1).padStart(2, "0")} / 04 · ${reconstructionDetail.subphaseZh}`
+    : validationDetail
+      ? `校验 ${String(validationDetail.phaseIndex + 1).padStart(2, "0")} / 04 · ${validationDetail.phase.zh}`
+      : runtimePhases[activeStep][fallbackRuntimeIndex];
+  const railProgress = complete ? 100 : running ? ((activeStep + stageProgress) / steps.length) * 100 : 0;
+  const stagePercent = Math.round(stageProgress * 100);
+  const reconstructionMaterialProgress = !running || activeStep < 2
+    ? 0
+    : activeStep === 2
+      ? reconstructionDetail?.repairProgress ?? 0
+      : 1;
   const defectCount = useMemo(() => Math.max(6, Math.round(triangles / 4100)), [triangles]);
   const comparisonMetrics = useMemo(() => {
     const beforeContinuity = Math.max(88.6, 95.4 - defectCount * 0.33);
@@ -136,7 +171,7 @@ export function ReconstructionExperience() {
       </section>
 
       <section className={`reconstruction-workspace ${dragging ? "is-dragging" : ""} ${complete ? "is-complete" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
-        <div className={`scene-column ${complete ? "is-complete" : ""}`}>
+        <div className={`scene-column ${complete ? "is-complete" : ""} ${reconstructionDetail ? "has-detail-overlay" : ""}`}>
           <div className="scene-meta scene-meta-top">
             <span><i className="live-dot" /> {complete ? "SYNCHRONIZED COMPARISON" : "REAL-TIME MESH"}</span>
             <span>{fileName}</span>
@@ -148,8 +183,9 @@ export function ReconstructionExperience() {
               phase={currentPhase}
               stageProgress={stageProgress}
               visualPalette="brand-cyan"
+              reconstructionFocusIndex={reconstructionDetail?.regionIndex}
               reconstructionLightWave
-              reconstructionMaterialProgress={!running || activeStep <= 2 ? 0 : activeStep === 3 ? stageProgress : 1}
+              reconstructionMaterialProgress={reconstructionMaterialProgress}
               synchronizedPose={!running}
               interactive={!running}
               className="dental-scene reconstruction-scene"
@@ -204,6 +240,26 @@ export function ReconstructionExperience() {
               </div>
             </div>
           )}
+          {reconstructionDetail && <ReconstructionDetailOverlay key={`repair-${reconstructionDetail.regionIndex}`} detail={reconstructionDetail} />}
+          {validationDetail && (
+            <section className={`precision-validation-hud phase-${validationDetail.phaseIndex + 1}`} aria-label="三维精度校验实时过程">
+              <header><span>PRECISION VALIDATION · LIVE 3D</span><i>{String(validationDetail.phaseIndex + 1).padStart(2, "0")} / 04</i></header>
+              <strong>{validationDetail.phase.zh}</strong>
+              <em>{validationDetail.phase.en}</em>
+              <p>{validationDetail.phase.note}</p>
+              <div className="validation-live-metrics">
+                <span><small>配准残差</small><b>{(0.006 + 0.158 * (1 - ease(Math.min(1, stageProgress / 0.2)))).toFixed(3)}</b></span>
+                <span><small>局部最大偏差</small><b>{stageProgress < 0.2 ? "—" : (0.029 + 0.063 * (1 - ease((stageProgress - 0.2) / 0.8))).toFixed(3)}</b></span>
+                <span><small>法线连续度</small><b>{(96.1 + 3.0 * ease((stageProgress - 0.52) / 0.48)).toFixed(1)}%</b></span>
+              </div>
+              <div className="validation-residual-legend" aria-label="表面残差颜色图例">
+                <span>0.00</span><i /><span>0.10</span><small>SURFACE RESIDUAL FIELD</small>
+              </div>
+              <div className="validation-phase-track" aria-hidden="true">
+                {validationPhases.map((phase, index) => <i key={phase.en} className={index < validationDetail.phaseIndex ? "is-done" : index === validationDetail.phaseIndex ? "is-active" : ""} />)}
+              </div>
+            </section>
+          )}
           {running && <div key={`bridge-${activeStep}`} className="stage-transition-veil" aria-hidden="true" />}
           {running && <div className="processing-caption">
             <span key={`caption-${activeStep}`} className="processing-caption-copy">
@@ -231,16 +287,33 @@ export function ReconstructionExperience() {
           </div>
           {message && <p className="inline-error" role="alert">{message}</p>}
 
-          <div className="process-rail" aria-label="重建流程" style={{ "--rail-progress": `${complete ? 100 : (activeStep + stageProgress) / steps.length * 100}%` } as CSSProperties}>
-            <span className="process-rail-fill" aria-hidden="true" />
+          <div className="process-rail" aria-label="重建流程" style={{ "--rail-progress": `${railProgress}%` } as CSSProperties}>
+            <span className="process-rail-track" aria-hidden="true">
+              <i className="process-rail-fill" />
+              {running && <b className="process-rail-pulse" />}
+            </span>
             {steps.map((step, index) => (
-              <div key={step.id} style={!complete && index === activeStep ? { "--step-progress": stageProgress } as CSSProperties : undefined} className={`process-step ${!complete && index === activeStep ? "is-active" : ""} ${index < activeStep || complete ? "is-done" : ""}`}>
+              <div
+                key={step.id}
+                aria-current={running && !complete && index === activeStep ? "step" : undefined}
+                style={running && !complete && index === activeStep ? {
+                  "--step-progress": stageProgress,
+                  "--step-angle": `${stageProgress * 360}deg`,
+                  "--step-percent": `${stagePercent}%`,
+                } as CSSProperties : undefined}
+                className={`process-step ${running && !complete && index === activeStep ? "is-active" : ""} ${index < activeStep || complete ? "is-done" : ""}`}
+              >
                 <span className="step-index">{step.id}</span>
-                <span className="step-marker"><i /></span>
+                <span className="step-marker"><i /><b /></span>
                 <span className="step-copy">
                   <span className="step-title-row"><strong>{step.title}</strong><em>{step.titleEn}</em></span>
                   <span className="step-note-cn">{step.note}</span>
                   <span className="step-note-en">{step.noteEn}</span>
+                  {running && !complete && index === activeStep && (
+                    <span className="step-live-status">
+                      <b>{runtimeStatus}</b><em>RUNNING · {String(stagePercent).padStart(2, "0")}%</em>
+                    </span>
+                  )}
                 </span>
               </div>
             ))}
