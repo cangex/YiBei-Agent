@@ -641,7 +641,8 @@ export function ReconstructionPatchScene({ kind, progress }: Props) {
     const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 30);
     camera.position.set(0.15, 0.22, 5.3);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.innerWidth < 780 ? 1.1 : 1.35));
+    const quality = document.documentElement.dataset.renderQuality || "balanced";
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === "economy" ? 1 : quality === "high" ? 1.8 : window.innerWidth < 780 ? 1.1 : 1.35));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
@@ -706,6 +707,7 @@ export function ReconstructionPatchScene({ kind, progress }: Props) {
     let sceneInViewport = true;
     let pageVisible = document.visibilityState !== "hidden";
     const render = (timestamp = performance.now()) => {
+      if (!pageVisible || !sceneInViewport) { frame = 0; return; }
       frame = requestAnimationFrame(render);
       if (!pageVisible || !sceneInViewport) {
         clock.getDelta();
@@ -751,12 +753,12 @@ export function ReconstructionPatchScene({ kind, progress }: Props) {
     };
     const viewportObserver = new IntersectionObserver((entries) => {
       sceneInViewport = entries[0]?.isIntersecting ?? true;
-      if (sceneInViewport) clock.getDelta();
+      if (sceneInViewport) { clock.getDelta(); if (!frame && pageVisible) render(); }
     }, { rootMargin: "80px" });
     viewportObserver.observe(mount);
     const handleVisibilityChange = () => {
       pageVisible = document.visibilityState !== "hidden";
-      if (pageVisible) clock.getDelta();
+      if (pageVisible) { clock.getDelta(); if (!frame && sceneInViewport) render(); }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     render();

@@ -1,0 +1,46 @@
+import { _electron } from 'playwright';
+import electron from 'electron';
+import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import assert from 'node:assert/strict';
+const temporary = await mkdtemp(path.join(os.tmpdir(), 'yibei-edge-qa-'));
+const env = { ...process.env, YIBEI_TEST_USER_DATA: path.join(temporary, '中文 数据') };
+const applicationPath = path.resolve('release/win-unpacked/resources/app.asar');
+const application = await _electron.launch({ args: [applicationPath], env });
+const page = await application.firstWindow();
+const checks = [];
+try {
+  await page.waitForSelector('[data-model-state=ready]');
+  const child = spawn(electron, [applicationPath], { env, stdio: 'ignore' });
+  const exit = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill(); reject(new Error('duplicate startup did not exit')); }, 15000);
+    child.once('error', reject); child.once('exit', (code) => { clearTimeout(timer); resolve(code); });
+  });
+  assert.equal(exit, 0);
+  assert.equal(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1);
+  checks.push('repeat startup exits and preserves one window');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.reload(); await page.waitForSelector('[data-model-state=ready]'); await page.waitForTimeout(600);
+  assert.equal(await page.locator('canvas').count(), 1);
+  const capture = await application.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64'));
+  await writeFile('dist-desktop/qa/reduced-motion.png', Buffer.from(capture, 'base64'));
+  checks.push('reduced-motion fresh load renders default molar');
+  const before = await page.evaluate(() => window.yibeiDesktop.read());
+  const broken = path.join(temporary, '损坏项目.yibei'); await writeFile(broken, '{ damaged');
+  await application.evaluate(({ dialog }, target) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [target] }); }, broken);
+  await page.getByRole('button', { name: '打开', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '项目文件损坏' }).waitFor();
+  const after = await page.evaluate(() => window.yibeiDesktop.read()); assert.equal(after.id, before.id);
+  assert.equal(await readFile(broken, 'utf8'), '{ damaged');
+  checks.push('corrupt project dialog feedback preserves active project and damaged original');
+  const refused = await page.evaluate(async () => { try { await window.yibeiDesktop.importSTL('wrong-project', new Uint8Array(100), '../escape.stl'); return false; } catch { return true; } });
+  assert.equal(refused, true); checks.push('invalid IPC import rejected');
+  const oldOrigin = page.url();
+  const closed = application.waitForEvent('close');
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close()); await closed;
+  await assert.rejects(fetch(oldOrigin)); checks.push('graceful shutdown releases internal server');
+  await writeFile('dist-desktop/qa/edge-report.json', JSON.stringify({ success: true, platform: process.platform, applicationPath, checks, time: new Date().toISOString() }, null, 2));
+  console.log(checks);
+} catch (error) { await application.close(); throw error; }

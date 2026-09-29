@@ -3,6 +3,7 @@
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { DentalScene, DentalSceneMode, DentalScenePhase, microtextureColorCss, RegionalTextureRegion, SimulationField } from "./DentalScene";
 import { ProductNav } from "./ProductNav";
+import { useProjectSession } from "./ProjectSession";
 
 const phases = [
   { title: "模型接入", short: "接收重建表面" },
@@ -30,7 +31,7 @@ type Scheme = {
   regions: SchemeRegion[];
 };
 
-const schemes: Scheme[] = [
+const defaultSchemes: Scheme[] = [
   {
     code: "A-RG",
     name: "五区均衡方案",
@@ -74,7 +75,6 @@ const schemes: Scheme[] = [
     ],
   },
 ];
-const parallelSchemeRegions = schemes.map((scheme) => scheme.regions);
 
 function microtextureColorStyle(region: RegionalTextureRegion) {
   return { "--region-color": microtextureColorCss(region) } as CSSProperties;
@@ -164,26 +164,36 @@ function ease(value: number) {
 }
 
 export function TwinAIExperience() {
-  const [modelSrc] = useState(() => {
-    if (typeof window === "undefined") return "/models/demo.stl";
-    return (window as unknown as { __YIBEI_MODEL_URL__?: string }).__YIBEI_MODEL_URL__ || "/models/demo.stl";
-  });
-  const [phase, setPhase] = useState(0);
-  const [running, setRunning] = useState(false);
-  const [complete, setComplete] = useState(false);
-  const [schemeIndex, setSchemeIndex] = useState(0);
-  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
-  const [phaseProgress, setPhaseProgress] = useState(0);
+  const session = useProjectSession();
+  const restored = session?.project.state.twin;
+  const modelSrc = session?.project.modelUrl || "/models/demo.stl";
+  const [schemes] = useState<Scheme[]>(() => restored?.candidates?.length === 3 ? restored.candidates as Scheme[] : defaultSchemes);
+  const parallelSchemeRegions = useMemo(() => schemes.map((scheme) => scheme.regions), [schemes]);
+  const [phase, setPhase] = useState(restored?.step ?? 0);
+  const [running, setRunning] = useState(!!restored?.started && !restored.complete);
+  const [complete, setComplete] = useState(restored?.complete ?? false);
+  const [schemeIndex, setSchemeIndex] = useState(restored?.schemeIndex ?? 0);
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(restored?.selectedRegionId ?? null);
+  const [phaseProgress, setPhaseProgress] = useState(restored?.progress ?? 0);
   const runToken = useRef(0);
+  const progressRef = useRef(phaseProgress);
+  useEffect(() => { progressRef.current = phaseProgress; }, [phaseProgress]);
+
+  useEffect(() => {
+    session?.checkpoint('twin', { step: complete ? 4 : phase, progress: complete ? 1 : phaseProgress, complete, started: running || complete, schemeIndex, selectedRegionId, candidates: schemes });
+  }, [session, phase, phaseProgress, complete, running, schemeIndex, selectedRegionId, schemes]);
 
   useEffect(() => {
     if (!running) return;
     const token = runToken.current;
-    const startedAt = performance.now();
     const duration = phaseDurations[phase];
+    let startedAt = performance.now() - progressRef.current * duration;
+    let hiddenAt = 0;
     let timer = 0;
     const tick = () => {
       if (token !== runToken.current) return;
+      if (document.hidden) { hiddenAt ||= performance.now(); timer = window.setTimeout(tick, 250); return; }
+      if (hiddenAt) { startedAt += performance.now() - hiddenAt; hiddenAt = 0; }
       const fraction = Math.min(1, (performance.now() - startedAt) / duration);
       setPhaseProgress(fraction);
       if (fraction >= 1) {

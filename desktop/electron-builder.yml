@@ -1,0 +1,48 @@
+appId: cn.yibei.medical.desktop
+productName: 益贝医疗智能体
+copyright: Copyright © 2026 益贝医疗智能体
+directories:
+  app: dist-desktop/app
+  output: release
+  buildResources: dist-desktop/app
+files:
+  - '!node_modules/**'
+  - main.mjs
+  - preload.cjs
+  - lib/**
+  - renderer/**
+  - icon.png
+  - icon.ico
+  - THIRD_PARTY_NOTICES.md
+  - licenses/**
+  - 使用说明.md
+  - package.json
+asar: true
+publish: null
+npmRebuild: false
+nodeGypRebuild: false
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: dist-desktop/app/icon.ico
+  artifactName: Yibei-Medical-${version}-${arch}-Setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: 益贝医疗智能体
+  uninstallDisplayName: 益贝医疗智能体
+  installerLanguages: [zh_CN, en_US]
+  language: '2052'
+  displayLanguageSelector: false
+  deleteAppDataOnUninstall: false
+  differentialPackage: false
+  runAfterFinish: true
+mac:
+  identity: null
+  category: public.app-category.medical
+  target: [dir]

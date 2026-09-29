@@ -39,3 +39,7 @@ yarn-error.log*
 /outputs/
 /work/
 *.tsbuildinfo
+/dist-desktop/
+/release/
+/test-results/
+/.sites-runtime/

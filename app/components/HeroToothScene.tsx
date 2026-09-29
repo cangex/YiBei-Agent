@@ -181,7 +181,8 @@ export function HeroToothScene({ className }: Props) {
     camera.position.set(0.05, 0.02, 5.55);
     camera.lookAt(0, -0.04, 0);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
+    const quality = document.documentElement.dataset.renderQuality || "balanced";
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality === "economy" ? 1 : quality === "high" ? 2 : 1.8));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.1;
@@ -426,6 +427,7 @@ export function HeroToothScene({ className }: Props) {
         baseRotationY,
       };
       mount.dataset.modelState = "ready";
+      if (reducedMotion) render();
     }, undefined, () => {
       if (!disposed) mount.dataset.modelState = "error";
     });
@@ -447,7 +449,13 @@ export function HeroToothScene({ className }: Props) {
     };
 
     const clock = new THREE.Clock();
+    let lastFrameTime = 0;
     const render = () => {
+      if (disposed || document.hidden) { frame = 0; return; }
+      if (!reducedMotion) frame = requestAnimationFrame(render);
+      const now = performance.now();
+      if (quality === "economy" && now - lastFrameTime < 1000 / 30) return;
+      lastFrameTime = now;
       const elapsed = reducedMotion ? 4.35 : clock.getElapsedTime();
       const phase = (elapsed % 8.4) / 8.4;
       const scanProgress = phase < 0.11 ? 0 : phase < 0.76 ? smoothstep(0.11, 0.76, phase) : 1;
@@ -480,8 +488,9 @@ export function HeroToothScene({ className }: Props) {
       }
       orbitalAttribute.needsUpdate = true;
       renderer.render(scene, camera);
-      if (!reducedMotion) frame = requestAnimationFrame(render);
     };
+    const onVisibility = () => { if (!document.hidden && !frame && !disposed) render(); };
+    document.addEventListener("visibilitychange", onVisibility);
 
     const resize = () => {
       const width = Math.max(1, mount.clientWidth);
@@ -490,6 +499,7 @@ export function HeroToothScene({ className }: Props) {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       if (rig) rig.pointMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+      if (reducedMotion && rig) render();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(mount);
@@ -498,6 +508,7 @@ export function HeroToothScene({ className }: Props) {
 
     return () => {
       disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
       observer.disconnect();
       cancelAnimationFrame(frame);
       delete mount.dataset.modelState;

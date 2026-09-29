@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
+import { WebProjectProvider } from "./components/ProjectSession";
 
 const title = "益贝医疗智能体｜智能义齿设计与数字孪生验证";
 const description = "从义齿三维轮廓超精准重建，到仿生微织构AI设计与数字孪生验证。";
@@ -20,5 +21,5 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="zh-CN"><body>{children}</body></html>;
+  return <html lang="zh-CN"><body><WebProjectProvider>{children}</WebProjectProvider></body></html>;
 }

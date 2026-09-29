@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+import { parseSTL } from "../lib/parse-stl";
+import { applyReconstruction, type ReconstructionPlan } from "../lib/reconstruction-plan";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 export type DentalSceneMode = "porcelain" | "scan" | "heatmap" | "repaired" | "texture" | "flow";
@@ -119,6 +120,9 @@ type Props = {
   interactive?: boolean;
   className?: string;
   onLoaded?: (meta: { triangles: number; dimensions: [number, number, number] }) => void;
+  repairDrive?: { factors: number[]; cleanup: number; focus: number; amount: boolean; active: boolean };
+  onRepairPlan?: (plan: ReconstructionPlan) => void;
+  onRepairRegion?: (index: number) => void;
 };
 
 type SliceSample = { centerX: number; centerZ: number; radiusX: number; radiusZ: number };
@@ -3554,9 +3558,16 @@ export function DentalScene({
   interactive = true,
   className,
   onLoaded,
+  repairDrive,
+  onRepairPlan,
+  onRepairRegion,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const loadedRef = useRef(onLoaded);
+  const repairRef = useRef({ drive: repairDrive, onPlan: onRepairPlan, onRegion: onRepairRegion });
+  useEffect(() => { repairRef.current = { drive: repairDrive, onPlan: onRepairPlan, onRegion: onRepairRegion }; }, [repairDrive, onRepairPlan, onRepairRegion]);
   const visualRef = useRef({ mode, phase, stageProgress, textureSides, wave, regionalTextures, parallelSchemes, selectedSchemeIndex, focusRegionId, simulationField, simulationProgress, reconstructionFocusIndex, reconstructionMaterialProgress, comparisonAppearance, showScannerOverlay, synchronizedPose, interactive });
 
   useEffect(() => { loadedRef.current = onLoaded; }, [onLoaded]);
@@ -3567,6 +3578,7 @@ export function DentalScene({
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
+    setLoadError("");
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const initialComparisonAppearance = visualRef.current.comparisonAppearance;
     const initialWorkflowActive = visualRef.current.reconstructionMaterialProgress !== undefined;
@@ -3583,13 +3595,28 @@ export function DentalScene({
     const paletteWave = brandCyanPalette ? BRAND_CYAN_SOFT : paletteAqua;
     const paletteBeforeRim = brandCyanPalette ? new THREE.Color(0x45666b) : RECONSTRUCTION_BEFORE_RIM;
     const scene = new THREE.Scene();
+    let repairPlan: ReconstructionPlan | undefined;
+    let repairGeometry: THREE.BufferGeometry | undefined;
+    let repairHitMesh: THREE.Mesh | undefined;
+    let cleanupPoints: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> | undefined;
+    let repairKey = '';
+    const repairUniforms = { uAmount: { value: 0 }, uFocus: { value: -1 }, uActive: { value: 0 } };
+    const sectionGeometry = new THREE.BufferGeometry();
+    const sectionLine = new THREE.LineSegments(sectionGeometry, new THREE.LineBasicMaterial({ color: 0xe17860, transparent: true, opacity: .95, depthTest: false }));
+    sectionLine.renderOrder = 20;
+    const validationGeometry = new THREE.BufferGeometry();
+    const validationVectors = new THREE.LineSegments(validationGeometry, new THREE.LineBasicMaterial({ color: 0xd47c56, transparent: true, opacity: .85, depthTest: false }));
+    validationVectors.renderOrder = 18;
+    let lastSectionKey = '';
+    let comparisonFitAspect = -1;
     const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100);
     camera.position.set(0.15, 0.25, 6.6);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
     const devicePixelRatio = window.devicePixelRatio || 1;
     const compactViewport = window.innerWidth < 780;
-    const maximumPixelRatio = Math.min(devicePixelRatio, compactViewport ? 1.2 : 1.5);
-    const minimumPixelRatio = Math.min(devicePixelRatio, compactViewport ? 1 : 1.15);
+    const quality = document.documentElement.dataset.renderQuality || "balanced";
+    const maximumPixelRatio = Math.min(devicePixelRatio, quality === "economy" ? 1 : quality === "high" ? 2 : compactViewport ? 1.2 : 1.5);
+    const minimumPixelRatio = Math.min(devicePixelRatio, quality === "economy" ? 0.85 : compactViewport ? 1 : 1.15);
     let activePixelRatio = maximumPixelRatio;
     renderer.setPixelRatio(activePixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -3617,6 +3644,8 @@ export function DentalScene({
 
     const modelGroup = new THREE.Group();
     scene.add(modelGroup);
+    modelGroup.add(sectionLine);
+    modelGroup.add(validationVectors);
     const ensembleRoot = new THREE.Group();
     ensembleRoot.name = "three-scheme-ensemble";
     ensembleRoot.visible = false;
@@ -3635,6 +3664,7 @@ export function DentalScene({
     let dragLastClientX = 0;
     let dragLastTimestamp = 0;
     let disposed = false;
+    const loadController = new AbortController();
     let frame = 0;
     let sceneInViewport = true;
     let pageVisible = document.visibilityState !== "hidden";
@@ -3967,11 +3997,12 @@ export function DentalScene({
 
     const buildModel = async () => {
       try {
-        const response = await fetch(src);
+        const response = await fetch(src, { signal: loadController.signal });
         if (!response.ok) throw new Error("STL load failed");
         const buffer = await response.arrayBuffer();
         if (disposed) return;
-        const geometry = new STLLoader().parse(buffer);
+        const geometry = await parseSTL(buffer, loadController.signal, !!repairRef.current.drive);
+        if (disposed) { geometry.dispose(); return; }
         geometry.computeVertexNormals();
         geometry.center();
         const sourceBounds = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute("position") as THREE.BufferAttribute);
@@ -3982,6 +4013,28 @@ export function DentalScene({
         geometry.scale(normalization, normalization, normalization);
         geometry.computeVertexNormals();
         const bounds = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute("position") as THREE.BufferAttribute);
+        if (geometry.userData.reconstructionPlan) {
+          repairPlan = geometry.userData.reconstructionPlan as ReconstructionPlan;
+          repairGeometry = geometry;
+          repairRef.current.onPlan?.(repairPlan);
+          geometry.setAttribute('repairMagnitude', new THREE.BufferAttribute(Float32Array.from(repairPlan.magnitudes, d => d / Math.max(repairPlan!.stats.max, 1e-9)), 1));
+          geometry.setAttribute('repairRegion', new THREE.BufferAttribute(Float32Array.from(repairPlan.regionIds), 1));
+          const overlay = new THREE.Mesh(geometry, new THREE.ShaderMaterial({
+            uniforms: repairUniforms, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+            vertexShader: `attribute float repairMagnitude; attribute float repairRegion; varying float mag; varying float reg; void main(){ mag=repairMagnitude; reg=repairRegion; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+            fragmentShader: `uniform float uAmount; uniform float uFocus; uniform float uActive; varying float mag; varying float reg; void main(){ float sel=1.-step(.3,abs(reg-uFocus)); float a=uAmount*smoothstep(0.,.025,mag)*.87; vec3 color=mix(vec3(.12,.66,.71),vec3(.92,.47,.30),mag); if(uAmount<.5){a=uActive*sel*.35;color=vec3(.10,.72,.76);} gl_FragColor=vec4(color,a); }`,
+          }));
+          overlay.renderOrder = 9; modelGroup.add(overlay);
+          const noisePositions: number[] = [], seenNoise = new Set<string>();
+          for (let i = 0; i < repairPlan.regionIds.length; i++) {
+            if (Math.hypot(...repairPlan.cleanup.subarray(i * 3, i * 3 + 3)) < 1e-8) continue;
+            const p = Array.from(repairPlan.original.subarray(i * 3, i * 3 + 3)), key = p.join(',');
+            if (!seenNoise.has(key)) { seenNoise.add(key); noisePositions.push(...p); }
+          }
+          const noiseGeometry = new THREE.BufferGeometry(); noiseGeometry.setAttribute('position', new THREE.Float32BufferAttribute(noisePositions, 3));
+          cleanupPoints = new THREE.Points(noiseGeometry, new THREE.PointsMaterial({ color: 0xdb8b5b, size: .027, transparent: true, opacity: 0, depthWrite: false }));
+          cleanupPoints.renderOrder = 12; modelGroup.add(cleanupPoints);
+        }
         regionalBounds = bounds.clone();
         regionalProjectionIndex = createSurfaceProjectionIndex(geometry, bounds);
         bounds.getSize(size);
@@ -4057,6 +4110,7 @@ export function DentalScene({
         configureThinFilmFlowBounds(fluidRetentionMaterial, bounds);
 
         const baseMesh = new THREE.Mesh(geometry, baseMaterial);
+        repairHitMesh = baseMesh;
         baseMesh.renderOrder = 0;
         modelGroup.add(baseMesh);
         const lightWaveMesh = new THREE.Mesh(geometry, reconstructionLightWaveMaterial);
@@ -4085,8 +4139,10 @@ export function DentalScene({
         modelGroup.add(bioEntityRig.group);
         fusionLayerRig = createFusionLayerRig(geometry);
         modelGroup.add(fusionLayerRig.group);
-        precisionValidationRig = createPrecisionValidationRig(geometry, regionalProjectionIndex, bounds);
-        modelGroup.add(precisionValidationRig.group);
+        if (!repairPlan) {
+          precisionValidationRig = createPrecisionValidationRig(geometry, regionalProjectionIndex, bounds);
+          modelGroup.add(precisionValidationRig.group);
+        }
         visualRef.current.parallelSchemes.slice(0, 3).forEach((schemeRegions) => {
           const ensembleRig = createEnsembleSchemeRig(
             geometry,
@@ -4135,8 +4191,11 @@ export function DentalScene({
         installRegionalPlan(visualRef.current.regionalTextures, visualRef.current.textureSides, visualRef.current.wave);
         mount.dataset.modelState = "ready";
         loadedRef.current?.({ triangles: position.count / 3, dimensions: [sourceSize.x, sourceSize.y, sourceSize.z] });
-      } catch {
-        if (!disposed) mount.dataset.error = "true";
+      } catch (error) {
+        if (!disposed) {
+          mount.dataset.modelState = "error";
+          setLoadError(error instanceof Error ? error.message : "模型加载失败，请重新导入。");
+        }
       }
     };
     buildModel();
@@ -4264,6 +4323,8 @@ export function DentalScene({
     const clock = new THREE.Clock();
     let elapsed = 0;
     let lastRenderedAt = 0;
+    let measuredFrames = 0;
+    let measurementStarted = performance.now();
     let qualityWindowTime = 0;
     let qualityWindowFrames = 0;
     let lastQualityAdjustmentAt = 0;
@@ -4284,6 +4345,7 @@ export function DentalScene({
     };
 
     const render = (timestamp = performance.now()) => {
+      if (disposed || !pageVisible || !sceneInViewport) { frame = 0; return; }
       frame = requestAnimationFrame(render);
       const visual = visualRef.current;
       const comparisonBefore = visual.comparisonAppearance === "before";
@@ -4293,7 +4355,7 @@ export function DentalScene({
         return;
       }
       const lowMotionComparison = comparisonBefore && visual.synchronizedPose && !visual.interactive;
-      if (lowMotionComparison && timestamp - lastRenderedAt < 1000 / 30) return;
+      if ((lowMotionComparison || quality === "economy" || reducedMotion) && timestamp - lastRenderedAt < 1000 / 30) return;
       lastRenderedAt = timestamp;
       const rawDelta = clock.getDelta();
       const delta = Math.min(rawDelta, 0.05);
@@ -4706,7 +4768,7 @@ export function DentalScene({
       scannerGroup.visible = visual.showScannerOverlay && visual.phase !== "validate" && state.scan > 0.01;
 
       if (precisionValidationRig) {
-        precisionValidationRig.group.visible = visual.phase === "validate";
+        precisionValidationRig.group.visible = visual.phase === "validate" && !repairPlan;
         if (visual.phase === "validate" && (reducedMotion || elapsed - lastValidationUpdateAt >= 1 / 30)) {
           updatePrecisionValidationRig(precisionValidationRig, visual.stageProgress, elapsed, reducedMotion);
           lastValidationUpdateAt = elapsed;
@@ -4817,7 +4879,8 @@ export function DentalScene({
           : visual.simulationField === "bio" ? -0.64 + visual.simulationProgress * 0.1
             : visual.simulationField === "fusion" ? 0.12
               : visual.phase === "validate" ? validationRotation : phaseRotation(visual.phase);
-      const targetRotationY = reconstructionFocusIndex >= 0
+      const actualRepairFocus = repairPlan && repairRef.current.drive?.active ? repairPlan.regions[repairRef.current.drive.focus] : undefined;
+      const targetRotationY = actualRepairFocus && !visual.synchronizedPose ? -Math.atan2(actualRepairFocus.center[0], actualRepairFocus.center[2]) : reconstructionFocusIndex >= 0
         ? reconstructionFocusRotations[reconstructionFocusIndex % reconstructionFocusRotations.length]
         : focusRegionIndex >= 0 ? focusRotations[focusRegionIndex] : fieldRotation + modelingSweep;
       const driftAmplitude = visual.synchronizedPose ? 0 : reconstructionFocusIndex >= 0 ? 0.006 : visual.simulationField === "bio" ? 0.012 : visual.simulationField === "fluid" ? 0.024 : 0.035;
@@ -4871,7 +4934,68 @@ export function DentalScene({
         });
       }
 
+      const repair = repairRef.current.drive;
+      if (repair && repairPlan && repairGeometry) {
+        if (visual.synchronizedPose && visual.comparisonAppearance !== 'default' && Math.abs(comparisonFitAspect - camera.aspect) > .001) {
+          const fit = Math.max(6.6, Math.max(size.x, size.z) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect) * 1.18);
+          camera.position.setLength(fit); controls.minDistance = fit * .65; controls.maxDistance = fit * 1.5;
+          comparisonFitAspect = camera.aspect;
+        }
+        const key = [repair.cleanup, ...repair.factors].map(v => Math.round(v * 80)).join(':');
+        if (key !== repairKey) {
+          applyReconstruction(repairPlan, repair.factors, repair.cleanup, repairGeometry.getAttribute('position').array as Float32Array);
+          repairGeometry.getAttribute('position').needsUpdate = true;
+          repairGeometry.computeVertexNormals();
+          repairKey = key;
+        }
+        // No unrelated simulated stress/defect cloud on the reconstruction mesh.
+        heatMaterial.opacity = 0;
+        repairMaterial.uniforms.uOpacity.value = 0;
+        if (defectPoints) defectPoints.visible = false;
+        if (cleanupPoints) {
+          const cleaning = visual.phase === 'repair' && repair.factors.every(v => v === 0) && repair.cleanup < 1;
+          cleanupPoints.visible = cleaning;
+          cleanupPoints.material.opacity = cleaning ? (1 - repair.cleanup) * .95 : 0;
+          cleanupPoints.material.size = .01 + (1 - repair.cleanup) * .017;
+        }
+        repairUniforms.uAmount.value = repair.amount ? 1 : 0;
+        repairUniforms.uActive.value = repair.active ? 1 : 0;
+        repairUniforms.uFocus.value = repair.focus;
+        const region = repairPlan.regions[repair.focus];
+        sectionLine.visible = repair.active && !!region;
+        validationVectors.visible = !!region && repair.active && visual.phase === 'validate';
+        if (region && sectionLine.visible) {
+          const sectionKey = `${repair.focus}:${key}`;
+          if (sectionKey !== lastSectionKey) {
+          const s = region.section, points = new Float32Array(s.length / 3);
+          for (let i = 0; i < s.length / 9; i++) for (let k = 0; k < 3; k++) points[i * 3 + k] = s[i * 9 + k] + s[i * 9 + 3 + k] * repair.factors[repair.focus] + s[i * 9 + 6 + k] * repair.cleanup;
+          const attribute = sectionGeometry.getAttribute('position');
+          if (attribute?.array.length === points.length) { (attribute.array as Float32Array).set(points); attribute.needsUpdate = true; }
+          else sectionGeometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
+          const vectors: number[] = [];
+          Array.from(region.triangles).filter((_, i) => i % 8 === 0).forEach(i => {
+            for (let k = 0; k < 3; k++) vectors.push(repairPlan!.original[i * 3 + k]);
+            for (let k = 0; k < 3; k++) vectors.push(repairPlan!.original[i * 3 + k] + (repairPlan!.delta[i * 3 + k] + repairPlan!.cleanup[i * 3 + k]) * 8);
+          });
+          validationGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vectors), 3));
+          lastSectionKey = sectionKey;
+          }
+          const anchor = new THREE.Vector3(...region.center);
+          modelGroup.updateMatrixWorld(); anchor.applyMatrix4(modelGroup.matrixWorld).project(camera);
+          mount.style.setProperty('--region-x', `${(anchor.x * .5 + .5) * 100}%`);
+          mount.style.setProperty('--region-y', `${(-anchor.y * .5 + .5) * 100}%`);
+          mount.dataset.repairRegion = region.id;
+        }
+      }
       renderer.render(scene, camera);
+      measuredFrames++;
+      if (timestamp - measurementStarted >= 1000) {
+        mount.dataset.renderFps = (measuredFrames * 1000 / (timestamp - measurementStarted)).toFixed(1);
+        mount.dataset.drawCalls = String(renderer.info.render.calls);
+        mount.dataset.geometries = String(renderer.info.memory.geometries);
+        mount.dataset.textures = String(renderer.info.memory.textures);
+        measurementStarted = timestamp; measuredFrames = 0;
+      }
     };
 
     const pointerHitsSelectedScheme = (event: PointerEvent, schemeIndex: number) => {
@@ -4886,6 +5010,15 @@ export function DentalScene({
       schemeRaycaster.setFromCamera(schemePointer, camera);
       return schemeRaycaster.intersectObject(rig.hitMesh, false).length > 0;
     };
+    const selectRepairRegion = (event: PointerEvent) => {
+      if (!repairRef.current.drive?.amount || !repairHitMesh || !repairPlan) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), camera);
+      const hit = ray.intersectObject(repairHitMesh)[0];
+      if (hit?.faceIndex !== undefined) { const ri = repairPlan.regionIds[hit.faceIndex! * 3]; if (ri >= 0) repairRef.current.onRegion?.(ri); }
+    };
+    renderer.domElement.addEventListener('pointerup', selectRepairRegion);
 
     const handleSchemePointerDown = (event: PointerEvent) => {
       const visual = visualRef.current;
@@ -4941,12 +5074,12 @@ export function DentalScene({
     observer.observe(mount);
     const viewportObserver = new IntersectionObserver((entries) => {
       sceneInViewport = entries[0]?.isIntersecting ?? true;
-      if (sceneInViewport) clock.getDelta();
+      if (sceneInViewport) { clock.getDelta(); if (!frame && pageVisible && !disposed) render(); }
     }, { rootMargin: "120px" });
     viewportObserver.observe(mount);
     const handleVisibilityChange = () => {
       pageVisible = document.visibilityState !== "hidden";
-      if (pageVisible) clock.getDelta();
+      if (pageVisible) { clock.getDelta(); if (!frame && sceneInViewport && !disposed) render(); }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     resize();
@@ -4954,11 +5087,13 @@ export function DentalScene({
 
     return () => {
       disposed = true;
+      loadController.abort();
       observer.disconnect();
       viewportObserver.disconnect();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       cancelAnimationFrame(frame);
       renderer.domElement.removeEventListener("pointerdown", handleSchemePointerDown);
+      renderer.domElement.removeEventListener('pointerup', selectRepairRegion);
       renderer.domElement.removeEventListener("pointermove", handleSchemePointerMove);
       renderer.domElement.removeEventListener("pointerup", finishSchemePointerDrag);
       renderer.domElement.removeEventListener("pointercancel", finishSchemePointerDrag);
@@ -4998,7 +5133,7 @@ export function DentalScene({
         [1, 2, 3].forEach((schemeNumber) => layoutHost.style.removeProperty(`--scheme-${schemeNumber}-x`));
       }
     };
-  }, [src, reconstructionLightWave, visualPalette]);
+  }, [src, reconstructionLightWave, visualPalette, loadAttempt]);
 
-  return <div ref={mountRef} className={className} aria-label="可交互义齿精密扫描与仿真三维模型" />;
+  return <div ref={mountRef} className={className} aria-label="可交互义齿精密扫描与仿真三维模型">{loadError && <div className="model-load-error" role="alert"><strong>模型暂时无法显示</strong><span>{loadError}</span><button type="button" onClick={() => setLoadAttempt((v) => v + 1)}>重新加载模型</button></div>}</div>;
 }
